@@ -1,0 +1,9 @@
+node_modules
+coverage
+.vs
+
+# Generated PDF documents
+*.pdf
+
+# Test-run logs (npm run test:db > db.log, ...)
+*.log

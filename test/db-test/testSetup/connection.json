@@ -1,0 +1,9 @@
+{
+  "hosts": [ "localhost" ],
+  "port": 33000,
+  "user": "dba",
+  "password": "",
+  "database": "olympics1988-2004",
+  "maxConnectionRetryCount": 1
+}
+

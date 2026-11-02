@@ -1,0 +1,68 @@
+{
+  "name": "@coradb/node-coradb",
+  "version": "1.0.0",
+  "description": "This is a Node.js driver for CoraDB database engine. It is developed in 100% JavaScript and does not require specific platform compilation.",
+  "author": "CoraDB Team <contact@coradb.ai> (http://www.coradb.ai/)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/apsisware/node-coradb.git"
+  },
+  "homepage": "https://github.com/apsisware/node-coradb#readme",
+  "bugs": {
+    "url": "https://github.com/apsisware/node-coradb/issues"
+  },
+  "license": "BSD-3-Clause",
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "commonjs",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "src/",
+    "CHANGELOG.md",
+    "COMPARISON WITH CUBRID DRIVER.md"
+  ],
+  "keywords": [
+    "Node.js",
+    "JavaScript",
+    "CoraDB",
+    "SQL",
+    "PGQL",
+    "Database",
+    "RDBMS",
+    "Graph database",
+    "driver",
+    "coradb-driver"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "coverage": "c8 --reporter=lcovonly --reporter=text mocha --require test/db-test/testSetup/suiteHooks.js --require test/e2e-test/suiteHooks.js \"test/**/test_*.js\"",
+    "lint": "eslint .",
+    "test": "npm run lint && mocha --require test/db-test/testSetup/suiteHooks.js --require test/e2e-test/suiteHooks.js \"test/**/test_*.js\"",
+    "test:unit": "mocha \"test/unit-test/test_*.js\" --grep \"with CoraDB\" --invert",
+    "test:db": "mocha --require test/db-test/testSetup/suiteHooks.js \"test/db-test/test_*.js\"",
+    "test:e2e": "mocha --require test/e2e-test/suiteHooks.js \"test/e2e-test/test_*.js\"",
+    "prepublishOnly": "npm run lint && npm run test:unit"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "c8": "^12.0.0",
+    "chai": "^6.2.2",
+    "eslint": "^10.8.0",
+    "globals": "^17.8.0",
+    "mocha": "^11.7.6"
+  },
+  "dependencies": {
+    "luxon": "^3.7.2"
+  },
+  "overrides": {
+    "glob": "^13.0.6",
+    "diff": "^8.0.4",
+    "serialize-javascript": "^7.0.7"
+  }
+}
