@@ -208,7 +208,7 @@ GetSchemaPacket.prototype.parseFetchSchema = function (parser) {
 
   this.tupleCount = parser._parseInt();
 
-  let length = 0;
+  let length;
   let SchemaInfo = new Array(this.tupleCount);
 
   for (let i = 0; i < this.tupleCount; ++i) {
@@ -224,7 +224,7 @@ GetSchemaPacket.prototype.parseFetchSchema = function (parser) {
         // Table name
         const Name = parser._parseNullTerminatedString(length);
         // Always = 2 - Indicates that Table type is a short value
-        length = parser._parseInt();
+        parser._parseInt(); // the length of the value after it, which is a fixed size
         // Table type
         const Type = parser._parseShort();
         const TypeName = CAS.getCoraDBClassTypeName(Type);
@@ -243,7 +243,7 @@ GetSchemaPacket.prototype.parseFetchSchema = function (parser) {
         length = parser._parseInt();
         // View name
         const Name = parser._parseNullTerminatedString(length);
-        length = parser._parseInt();
+        parser._parseInt(); // the length of the value after it, which is a fixed size
         // View type
         const Type = parser._parseShort();
         const TypeName = CAS.getCoraDBClassTypeName(Type);
@@ -260,24 +260,24 @@ GetSchemaPacket.prototype.parseFetchSchema = function (parser) {
         length = parser._parseInt();
         // Column name
         const Name = parser._parseNullTerminatedString(length);
-        length = parser._parseInt();
+        parser._parseInt(); // the length of the value after it, which is a fixed size
         // sch_attribute_domain: the column data type. The low byte holds the
         // CoraDB data-type code (the high bit is a flag).
         const Type = parser._parseShort() & 0xFF;
         const TypeName = CAS.getCoraDBDataTypeName(Type);
-        length = parser._parseInt();
+        parser._parseInt(); // the length of the value after it, which is a fixed size
         const Scale = parser._parseShort();
-        length = parser._parseInt();
+        parser._parseInt(); // the length of the value after it, which is a fixed size
         const Precision = parser._parseInt();
-        length = parser._parseInt();
+        parser._parseInt(); // the length of the value after it, which is a fixed size
         // sch_attribute_indexed
         parser._parseShort();
-        length = parser._parseInt();
+        parser._parseInt(); // the length of the value after it, which is a fixed size
         const NonNull = (parser._parseShort() === 1);
-        length = parser._parseInt();
+        parser._parseInt(); // the length of the value after it, which is a fixed size
         // sch_attribute_shared
         parser._parseShort();
-        length = parser._parseInt();
+        parser._parseInt(); // the length of the value after it, which is a fixed size
         const Unique = (parser._parseShort() === 1);
         length = parser._parseInt();
 
@@ -286,14 +286,14 @@ GetSchemaPacket.prototype.parseFetchSchema = function (parser) {
           parser._parseNullTerminatedString(length); // Default value
         }
 
-        length = parser._parseInt();
+        parser._parseInt(); // the length of the value after it, which is a fixed size
         // sch_attribute_attr_order
         parser._parseInt();
         length = parser._parseInt();
         const ClassName = parser._parseNullTerminatedString(length);
         length = parser._parseInt();
         const SourceClass = parser._parseNullTerminatedString(length);
-        length = parser._parseInt();
+        parser._parseInt(); // the length of the value after it, which is a fixed size
         const IsKey = (parser._parseShort() === 1);
 
         // CoraDB appends a per-column comment/remarks field to the attribute schema result.
@@ -354,12 +354,12 @@ GetSchemaPacket.prototype.parseFetchSchema = function (parser) {
         const FkTableName = parser._parseNullTerminatedString(length);
         length = parser._parseInt();
         const FkColumnName = parser._parseNullTerminatedString(length);
-        length = parser._parseInt();
+        parser._parseInt(); // the length of the value after it, which is a fixed size
         // Sequence type: sch_exported_keys_keySeq
         parser._parseShort();
-        length = parser._parseInt();
+        parser._parseInt(); // the length of the value after it, which is a fixed size
         const UpdateAction = parser._parseShort();
-        length = parser._parseInt();
+        parser._parseInt(); // the length of the value after it, which is a fixed size
         const DeleteAction = parser._parseShort();
         length = parser._parseInt();
         const FkName = parser._parseNullTerminatedString(length);
@@ -388,12 +388,12 @@ GetSchemaPacket.prototype.parseFetchSchema = function (parser) {
         const FkTableName = parser._parseNullTerminatedString(length);
         length = parser._parseInt();
         const FkColumnName = parser._parseNullTerminatedString(length);
-        length = parser._parseInt();
+        parser._parseInt(); // the length of the value after it, which is a fixed size
         // Sequence type: sch_imported_keys_keySeq
         parser._parseShort();
-        length = parser._parseInt();
+        parser._parseInt(); // the length of the value after it, which is a fixed size
         const UpdateAction = parser._parseShort();
-        length = parser._parseInt();
+        parser._parseInt(); // the length of the value after it, which is a fixed size
         const DeleteAction = parser._parseShort();
         length = parser._parseInt();
         const FkName = parser._parseNullTerminatedString(length);
@@ -417,7 +417,7 @@ GetSchemaPacket.prototype.parseFetchSchema = function (parser) {
         const TableName = parser._parseNullTerminatedString(length);
         length = parser._parseInt();
         const ColumnName = parser._parseNullTerminatedString(length);
-        length = parser._parseInt();
+        parser._parseInt(); // the length of the value after it, which is a fixed size
         // Sequence type: sch_primary_key_keySeq
         parser._parseInt();
         length = parser._parseInt();

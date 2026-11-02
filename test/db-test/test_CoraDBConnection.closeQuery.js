@@ -34,7 +34,7 @@ describe('CoraDBConnection', function () {
 
     it('should fail to closeQuery() with an undefined query handle', function () {
       const client = testSetup.createDefaultCoraDBDemodbConnection();
-      let queryHandle;
+      const queryHandle = undefined;
 
       return client.closeQuery(queryHandle)
         .then(() => {
@@ -48,7 +48,7 @@ describe('CoraDBConnection', function () {
 
     it('should fail to closeQuery(callback) with an invalid query handle', function (done) {
       const client = testSetup.createDefaultCoraDBDemodbConnection();
-      let queryHandle;
+      const queryHandle = undefined;
 
       client.closeQuery(queryHandle, function (err) {
         expect(err).to.be.an.instanceOf(Error);

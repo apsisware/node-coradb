@@ -85,7 +85,7 @@ test/
 
 ```bash
 npm install
-npm run lint            # eslint (0 errors; some known warnings)
+npm run lint            # eslint (no errors, no warnings)
 npm run test:unit       # no server needed (excludes tests named "with CoraDB")
 npm run test:db         # live server, test/db-test (suite hooks drop the test tables)
 npm run test:e2e        # live server, test/e2e-test
