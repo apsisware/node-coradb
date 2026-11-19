@@ -170,16 +170,64 @@ exports._escapeString = _escapeString;
  * @private
  */
 // A `?` placeholder, or a span in which a `?` is text: a quoted string, a
-// quoted identifier or a comment (see `_sqlFormat`).
-const PLACEHOLDER_OR_TEXT = /'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|--[^\n]*|\/\/[^\n]*|\/\*[\s\S]*?\*\/|\?/g;
+// quoted identifier or a comment (see `_sqlFormat`); and the MATCH and
+// PATH_COMP keywords and `;`, which decide what `[` means. Line comments end
+// at `\r` or `\n`, as the server's lexer ends them.
+const PLACEHOLDER_OR_TEXT = /'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|--[^\n\r]*|\/\/[^\n\r]*|\/\*[\s\S]*?\*\/|\?|\b(?:MATCH|PATH_COMP)\b|;/gi;
+
+/**
+ * `sql` with each `?` placeholder replaced by what `onPlaceholder()` returns,
+ * left to right; the text of strings, quoted identifiers and comments kept.
+ *
+ * `[...]` is a quoted identifier outside a graph pattern, but inside a MATCH
+ * clause `[` opens an edge pattern (corasql_lexer.l: SQUARE_BRACKET_OPEN when
+ * match_patterns_count > 0), as in `-[e:knows WHERE e.since > ?]->`, and its
+ * `?` are placeholders. They were skipped, so the values went to the wrong
+ * placeholders — in a batch, to the next statement.
+ *
+ * An edge pattern always follows a `-` (`-[...]->`, `-[...]-`, `<-[...]-`:
+ * edge_def_rule in corasql_grammar.y), so after MATCH only a `[` that follows
+ * a `-` is one; `[name]` later in the statement stays a quoted identifier.
+ */
+function replacePlaceholders(sql, onPlaceholder) {
+  let inMatch = false;
+
+  const visit = (text) => text.replace(new RegExp(PLACEHOLDER_OR_TEXT.source, 'gi'), (token, offset, whole) => {
+    if (token === '?') {
+      return onPlaceholder();
+    }
+
+    if (token === ';') {
+      inMatch = false;
+    } else if (/^(?:match|path_comp)$/i.test(token)) {
+      inMatch = true;
+    } else if (token[0] === '[' && inMatch && followsDash(whole, offset)) {
+      return '[' + visit(token.slice(1, -1)) + ']';
+    }
+
+    return token;
+  });
+
+  return visit(sql);
+}
+
+/** Whether the text before `offset` ends with `-` (spaces between allowed). */
+function followsDash(text, offset) {
+  let i = offset - 1;
+
+  while (i >= 0 && /\s/.test(text[i])) i -= 1;
+
+  return i >= 0 && text[i] === '-';
+}
 
 /** The number of `?` placeholders in `sql`, counted as `_sqlFormat` counts them. */
 exports._countPlaceholders = function (sql) {
   let n = 0;
 
-  for (const m of sql.matchAll(PLACEHOLDER_OR_TEXT)) {
-    if (m[0] === '?') ++n;
-  }
+  replacePlaceholders(sql, () => {
+    n += 1;
+    return '?';
+  });
 
   return n;
 };
@@ -232,10 +280,8 @@ exports._sqlFormat = function (sql, arrValues, arrDelimiters) {
   // `?` in one shifted every parameter after it. `[name]` is a quoted
   // identifier too: an apostrophe in one was taken for the start of a
   // string, so the next value landed outside its quotes, in code position.
-  return sql.replaceAll(PLACEHOLDER_OR_TEXT, function (match) {
-    if (match !== '?') {
-      return match;
-    }
+  return replacePlaceholders(sql, function () {
+    const match = '?';
 
     // A placeholder with no value left is kept as written (every one of
     // them: with `===`, only the first was, and the rest became NULL), so
@@ -296,6 +342,16 @@ exports._sqlFormat = function (sql, arrValues, arrDelimiters) {
       return `X'${Buffer.from(val.buffer, val.byteOffset, val.byteLength).toString('hex')}'`;
     }
 
+    // An array is not one value: it went out as the text '1,2', so
+    // `IN (?)` silently matched nothing. (Bound on the server, an array is a
+    // collection — see sql().)
+    if (Array.isArray(val)) {
+      throw driverError(
+        'INVALID_PARAMETER',
+        'An array cannot be written as one SQL value; write one ? per element, or bind it on the server with sql() as a SET / MULTISET / LIST.'
+      );
+    }
+
     // A plain object has no SQL text form: it went out as '[object Object]'.
     if (typeof val === 'object' && !(val instanceof Date) && !Array.isArray(val) &&
         String(val) === '[object Object]') {
@@ -314,8 +370,11 @@ exports._sqlFormat = function (sql, arrValues, arrDelimiters) {
       // but CoraDB is 1-12. The other fields need no padding, but the
       // milliseconds do: `.7` is a fraction of a second, 700 ms.
       const ms = String(val.getUTCMilliseconds()).padStart(3, '0');
+      // Four digits: the server reads a two-digit year as 19xx / 20xx
+      // (db_date.c), so the year 45 was written as '45' and stored as 2045.
+      const year = String(val.getUTCFullYear()).padStart(4, '0');
 
-      return `${delimiter}${val.getUTCMonth() + 1}/${val.getUTCDate()}/${val.getUTCFullYear()} ${val.getUTCHours()}:${val.getUTCMinutes()}:${val.getUTCSeconds()}.${ms}${delimiter}`;
+      return `${delimiter}${val.getUTCMonth() + 1}/${val.getUTCDate()}/${year} ${val.getUTCHours()}:${val.getUTCMinutes()}:${val.getUTCSeconds()}.${ms}${delimiter}`;
     }
 
     // Otherwise, safely escape the string.

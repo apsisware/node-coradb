@@ -5,8 +5,8 @@
 | | |
 | --- | --- |
 | **A new, promise-first API** | `sql()`, `stream()`, `cursor()`, `prepare()`, `executeMulti()` and `transaction()`, with per-request timeouts and `AbortSignal`. The original methods are all kept. |
-| **Correct values** | BIGINT and NUMERIC are never rounded (text when a number would change them), SMALLINT is signed, collections and JSON are read and bound, strings are decoded in their column's charset, and time-zone values give the right instant, including the hour repeated when DST ends. |
-| **Safe transactions** | Changing auto-commit commits the pending work, as JDBC does; a session lost with auto-commit off fails with `TRANSACTION_LOST` instead of silently reconnecting; COMMIT and ROLLBACK are sent only when a transaction is open; results stay open across a commit. |
+| **Correct values** | BIGINT and NUMERIC are never rounded (text when a number would change them), SMALLINT is signed, collections and JSON are read and bound, strings are decoded in their column's charset, and time-zone values give the right instant, including the hour repeated when DST ends; column nullability is reported the right way round, and text can go out in ISO-8859-1 (`charset`). |
+| **Safe transactions** | Changing auto-commit commits the pending work, as JDBC does; a session lost with a transaction open fails with `TRANSACTION_LOST` instead of silently reconnecting; COMMIT and ROLLBACK are sent only when a transaction is open; results stay open across a commit. |
 | **Resilient connections** | A lost socket answers every waiting request; a statement interrupted by a lost connection is retried once on a new one when nothing was pending; dropped prepared statements are prepared again; `cancel()` stops a statement through the broker and keeps the connection. |
 | **Real errors** | Every failure is a `CoraDBError` (`code`, `casCode`, `statement`, `retryable`); failed batches are a `CoraDBBatchError`. CAS errors use the current numbering (`-10007`, not `-1007`). |
 | **Modern runtime** | Node.js 20+, luxon instead of moment-timezone, TypeScript definitions (`index.d.ts`), mocha 11 / chai 6 / eslint 10 / c8. |
@@ -54,8 +54,10 @@ the sections below):
 - **`setAutoCommitMode()` commits** the pending work when the mode changes.
 - BIGINT and NUMERIC values that do not fit a JavaScript number come back as
   **strings**; a zero date comes back as **null**; SMALLINT is signed.
-- After a lost connection with auto-commit off, requests fail with
-  `TRANSACTION_LOST` instead of silently reconnecting.
+- After a lost connection with auto-commit off and a transaction open,
+  requests fail with `TRANSACTION_LOST` instead of silently reconnecting.
+- Text goes out in UTF-8 unless the `charset` option says `'iso-8859-1'`;
+  set it for a database created with ISO-8859-1.
 - The text formatter escapes strings by doubling the quote only (no backslash
   escapes), and refuses values it cannot write safely.
 
@@ -67,9 +69,9 @@ the sections below):
 | Runtime dependency | `moment-timezone` | `luxon` (time-zone values) |
 | Test / lint tools | mocha 3, chai 3, eslint 3, istanbul, coveralls | mocha 11, chai 6, eslint 10 (flat config), c8 |
 | Type definitions | none | `index.d.ts` |
-| Published files | everything | `index.js`, `index.d.ts`, `src/`, `CHANGELOG.md`, `COMPARISON WITH CUBRID DRIVER.md` (`files` in package.json) |
+| Published files | everything | `index.js`, `index.d.ts`, `src/`, `CHANGELOG.md`, `COMPARISON WITH CUBRID DRIVER.md`, `MIGRATION.md` (`files` in package.json) |
 | Protocol version sent | V7 | V9 |
-| Package | `node-cubrid` 11.0.0 | `@coradb/node-coradb` 1.0.0 (public, scoped under the CoraDB npm organization) |
+| Package | `node-cubrid` 11.0.0 | `@coradb/node-coradb` 1.0.1 (public, scoped under the CoraDB npm organization) |
 
 Source changes that apply throughout: `node:` prefixes on built-in modules,
 `Buffer.alloc` / `Buffer.from` instead of `new Buffer`, `subarray` instead of
@@ -112,7 +114,10 @@ removed from the original methods.
 - `getConnectedHost()` (never connects), `getQueueLength()` (the new name of
   `getQueueDepth()`), `casId`.
 - `getDatabaseParameter()` / `setDatabaseParameter()` take names
-  (`'ISOLATION_LEVEL'`, `'isolationLevel'`) as well as numbers.
+  (`'ISOLATION_LEVEL'`, `'isolationLevel'`) as well as numbers; AUTO_COMMIT is
+  the connection's own mode (`setAutoCommitMode()`).
+- The `charset` connection option (JDBC's `charSet`): `'utf-8'` or
+  `'iso-8859-1'`.
 
 **Exports** (`require('@coradb/node-coradb')`)
 
@@ -122,8 +127,9 @@ removed from the original methods.
 `DataType`, `BINDABLE_TYPES`, `CoraDBError`, `CoraDBBatchError`,
 `isRetryable()`. node-cubrid exports only `Helpers` and `createConnection()`.
 
-**Constants** (`CASConstants`): the data types `TIMETZ`, `JSON`,
-`GRAPH_OBJECT`; `CCI_EXEC_GET_GENERATED_KEYS`; `CCI_PREPARE_XASL_CACHE_PINNED`;
+**Constants** (`CASConstants`): the data types `JSON` and `GRAPH_OBJECT`
+(and type code 33, `CCI_U_TYPE_TIMETZ`, which the protocol reserves: CoraDB
+has no TIMETZ type); `CCI_EXEC_GET_GENERATED_KEYS`; `CCI_PREPARE_XASL_CACHE_PINNED`;
 the function codes up to `CAS_CHANGE_MODE`; `ColumnTypeMask`,
 `CollectionFlag`, `CharsetId`, `getCharsetEncoding()`,
 `confirmColumnType()`, `getCoraDBSchemaTypeName()`,
@@ -216,7 +222,8 @@ the function codes up to `CAS_CHANGE_MODE`; `ColumnTypeMask`,
   open**; a rollback first closes the open results (prepared statements stay).
 - **Results stay open across a commit** (holdable results, when the broker
   supports them).
-- **A lost session with auto-commit off is not replaced silently**: requests
+- **A lost session with a transaction open is not replaced silently** (auto-commit
+  off and the server reporting a transaction, as JDBC decides): requests
   fail with `TRANSACTION_LOST` until `rollback()`, `setAutoCommitMode()`,
   `connect()` or `close()`. `commit()` refuses to commit on a session other
   than the one the transaction began in.
@@ -243,8 +250,12 @@ the function codes up to `CAS_CHANGE_MODE`; `ColumnTypeMask`,
 | SET / MULTISET / SEQUENCE | skipped by a guessed size | arrays, also bound as parameters |
 | collection parameters on the wire | — | always a SEQUENCE, as the JDBC driver sends them; the server makes it the column's SET / MULTISET / LIST |
 | unknown type | an `Error` as the cell value, then every later column out of step | `{ type, typeCode, raw }` |
-| GRAPH_OBJECT, JSON, TIMETZ | unknown | text / string / time-zone value |
+| OBJECT, GRAPH_OBJECT | OBJECT: the object id as text (`OID:@` and page, slot, volume); GRAPH_OBJECT unknown | both the object id as text; null for an all-zero id |
+| JSON | unknown | string |
+| empty BIT VARYING | null | an empty Buffer |
+| column `IsNullable` | the wrong way round (NOT NULL columns nullable) | as the server sends it (`false` for NOT NULL and primary keys) |
 | strings | UTF-8 | in their column's charset (UTF-8, ISO-8859-1, binary as Latin-1) |
+| text sent (SQL, string parameters) | UTF-8 | the `charset` option: UTF-8 (default) or ISO-8859-1; a character it cannot hold is refused |
 | `Timezone.valueOf()` | the wall-clock time read as UTC | the instant (through luxon) |
 | the hour repeated when DST ends | — | the server's abbreviation (EDT / EST) picks which of the two instants |
 | zone-less date strings bound as DATE/DATETIME | parsed in local time, sent in UTC | sent as written |

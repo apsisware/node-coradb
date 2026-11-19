@@ -143,6 +143,38 @@ function checkTypeName(type, index) {
 const DECIMAL = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i;
 
 /**
+ * A NUMERIC value as the server reads it: plain digits, an optional `-` and
+ * `.`. The server's conversion (numeric_coerce_string_to_num) refuses an
+ * exponent, so 1e-7 (which JavaScript writes as "1e-7") and '1.5E3' failed;
+ * the JDBC driver sends BigDecimal.toPlainString(). A leading `+` is dropped:
+ * the server counts it as a digit of the precision.
+ */
+function plainDecimal(text, index) {
+  const m = /^([+-]?)(\d*)(?:\.(\d*))?(?:e([+-]?\d+))?$/i.exec(text);
+  const sign = m[1] === '-' ? '-' : '';
+  let int = m[2] || '';
+  let frac = m[3] || '';
+  const exp = m[4] ? Number(m[4]) : 0;
+
+  // NUMERIC holds at most 38 digits; an exponent far past that is not a value it can hold.
+  if (Math.abs(exp) > 100) throw invalid(index, `${JSON.stringify(text)} is out of range for a NUMERIC.`);
+
+  if (exp > 0) {
+    frac = frac.padEnd(exp, '0');
+    int += frac.slice(0, exp);
+    frac = frac.slice(exp);
+  } else if (exp < 0) {
+    int = int.padStart(-exp, '0');
+    frac = int.slice(int.length + exp) + frac;
+    int = int.slice(0, int.length + exp);
+  }
+
+  int = int.replace(/^0+(?=\d)/, '') || '0';
+
+  return sign + int + (frac ? `.${frac}` : '');
+}
+
+/**
  * The number a value stands for, for a numeric type, or throws. A string has
  * to be a decimal number: `Number()` alone read `''` as 0 and `'0x10'` as 16.
  */
@@ -300,8 +332,16 @@ function coerce(value, type, index, element) {
       return coerceCollection(value, element, index);
     case 'char': case 'varchar': case 'string': case 'nchar': case 'varnchar':
       return typeof value === 'string' ? value : String(value);
-    case 'json':
-      return typeof value === 'string' ? value : JSON.stringify(value);
+    case 'json': {
+      if (typeof value === 'string') return value;
+
+      const text = JSON.stringify(value);
+
+      // A function, a symbol or undefined has no JSON form: it went out as NULL.
+      if (text === undefined) throw invalid(index, `a ${kindOf(value)} has no JSON form.`);
+
+      return text;
+    }
     case 'short': case 'int': {
       const n = numberOf(value, index);
 
@@ -339,7 +379,7 @@ function coerce(value, type, index, element) {
 
       if (!DECIMAL.test(text)) throw invalid(index, `${JSON.stringify(text)} is not a number.`);
 
-      return text;
+      return plainDecimal(text, index);
     }
     case 'date': case 'time': case 'datetime': case 'timestamp': {
       const d = dateOf(value, type);

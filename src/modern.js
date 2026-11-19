@@ -260,7 +260,7 @@ async function readRest(conn, ctx, handle, packet, values) {
       throw ctx.stopped;
     }
 
-    const response = await inContext(conn, ctx, () => conn._fetchFor(handle, false, packet._generation));
+    const response = await inContext(conn, ctx, () => conn._fetchFor(handle, false, packet._generation, packet));
     const batch = response && response.result && response.result.ColumnValues;
 
     if (!batch || batch.length === 0) {
@@ -280,12 +280,12 @@ async function readRest(conn, ctx, handle, packet, values) {
  * session it came from (login `generation`): after a reconnect the same number
  * may name another caller's statement, which used to be closed in its place.
  */
-function release(conn, handle, generation) {
+function release(conn, handle, generation, owner) {
   if (handle === undefined || handle === null) {
     return Promise.resolve();
   }
 
-  return conn._releaseHandle(handle, generation);
+  return conn._releaseHandle(handle, generation, owner);
 }
 
 function bindOrReject(params, statement) {
@@ -334,7 +334,7 @@ class Cursor {
 
     if (this.done) {
       this._closed = true;
-      release(conn, handle, this._generation);
+      release(conn, handle, this._generation, packet);
     }
   }
 
@@ -381,7 +381,7 @@ class Cursor {
 
     let fetching;
     const response = await limited(this._conn, merged, this.sql, (ctx) => {
-      fetching = inContext(this._conn, ctx, () => this._conn._fetchFor(this._handle, false, this._generation));
+      fetching = inContext(this._conn, ctx, () => this._conn._fetchFor(this._handle, false, this._generation, this._packet));
       return fetching;
     }).catch((err) => {
       if (fetching) {
@@ -415,7 +415,7 @@ class Cursor {
     }
 
     this._closed = true;
-    await release(this._conn, this._handle, this._generation);
+    await release(this._conn, this._handle, this._generation, this._packet);
   }
 
   async *[Symbol.asyncIterator]() {
@@ -499,7 +499,7 @@ class PreparedStatement {
     }
 
     this._closed = true;
-    await release(this._conn, this._prepared.queryHandle, this._prepared._generation);
+    await release(this._conn, this._prepared.queryHandle, this._prepared._generation, this._prepared);
   }
 }
 
@@ -647,7 +647,7 @@ class MultiResult {
       // The first result came with the EXECUTE reply; each later one is asked
       // for, whether it has rows or not.
       if (this._index !== 0) {
-        packet = this._packet = await inContext(conn, ctx, () => conn._nextResultFor(this._handle, this._generation));
+        packet = this._packet = await inContext(conn, ctx, () => conn._nextResultFor(this._handle, this._generation, this._packet));
       }
 
       const info = this._infos[this._index];
@@ -693,7 +693,7 @@ class MultiResult {
 
     const conn = this._conn;
 
-    await release(conn, this._handle, this._generation);
+    await release(conn, this._handle, this._generation, this._packet);
 
     if (this._commitBySelf && conn.autoCommitMode === true &&
         conn.connectionOpened && conn._generation === this._generation) {
@@ -952,7 +952,7 @@ function install(CoraDBConnection, internal) {
 
         return resultOf(packet, values, n.options);
       } finally {
-        await release(this, handle, packet && packet._generation);
+        await release(this, handle, packet && packet._generation, packet || undefined);
       }
     });
   };
@@ -1008,7 +1008,7 @@ function install(CoraDBConnection, internal) {
       const { handle, packet } = await inContext(this, ctx, () => this._execute(sql, bound));
 
       if (ctx.stopped) {
-        await release(this, handle, packet && packet._generation);
+        await release(this, handle, packet && packet._generation, packet || undefined);
         throw ctx.stopped;
       }
 
@@ -1048,7 +1048,7 @@ function install(CoraDBConnection, internal) {
       const packet = await inContext(this, ctx, () => this._prepare(sql));
 
       if (ctx.stopped) {
-        await release(this, packet.queryHandle, packet._generation);
+        await release(this, packet.queryHandle, packet._generation, packet);
         throw ctx.stopped;
       }
 

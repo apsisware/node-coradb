@@ -9,6 +9,7 @@ const CASConstants = require('./constants/CASConstants');
 
 const Helpers = require('./utils/Helpers');
 const { CoraDBBatchError, driverError, serverError, withStatement } = require('./errors');
+const Text = require('./charset');
 const { checkTyped } = require('./params');
 const NoopLogger = require('./NoopLogger');
 const Query = require('./query/Query');
@@ -295,9 +296,10 @@ function parseHost(hostPort, defaultPort) {
  * @param logger
  * @param requestTimeoutMs default client-side timeout of sql(), stream(), cursor() and prepare()
  * @param queryTimeout server-side query timeout, in milliseconds (see setQueryTimeout())
+ * @param charset what text goes out and is read in: 'utf-8' (default) or 'iso-8859-1' (see charset.js)
  * @constructor
  */
-function CoraDBConnection(hosts, port, user, password, database, connectionTimeout, maxConnectionRetryCount, logger, requestTimeoutMs, queryTimeout) {
+function CoraDBConnection(hosts, port, user, password, database, connectionTimeout, maxConnectionRetryCount, logger, requestTimeoutMs, queryTimeout, charset) {
   // Using EventEmitter.call on an object will do the setup of instance methods / properties
   // (not inherited) of an EventEmitter.
   // It is similar in purpose to super(...) in Java or base(...) in C#, but it is not implicit in Javascript.
@@ -316,6 +318,7 @@ function CoraDBConnection(hosts, port, user, password, database, connectionTimeo
     logger = hosts.logger;
     requestTimeoutMs = hosts.requestTimeoutMs;
     queryTimeout = hosts.queryTimeout;
+    charset = hosts.charset;
     // Allow users to specify a single host via `host`
     // or multiple hosts as `hosts` array.
     hosts = hosts.host || hosts.hosts;
@@ -347,6 +350,8 @@ function CoraDBConnection(hosts, port, user, password, database, connectionTimeo
   // How long the server lets a statement run, in milliseconds; 0 for no
   // limit. Sent with every execute (see setQueryTimeout()).
   this.queryTimeout = timeoutMs(queryTimeout);
+  // As the JDBC driver's charSet: 'utf8' or 'latin1'. Throws for another.
+  this.charset = Text.charsetOf(charset);
 
   // Session public variables
   this.autoCommitMode = true;
@@ -544,7 +549,10 @@ function _onSocketGone(socket, err) {
   // Handles belong to the session that has just ended.
   this._queryResultSets = {};
 
-  if (wasOpen && this.autoCommitMode === false) {
+  // Only when the session had a transaction open (the CAS info status of its
+  // last reply), as the JDBC driver decides: it reconnects silently when
+  // !isActive(). With nothing pending, nothing was lost.
+  if (wasOpen && this.autoCommitMode === false && _transactionActive.call(this)) {
     this._transactionLost = true;
   }
 
@@ -1077,6 +1085,7 @@ function _batchExecuteNoQuery(sqls) {
     const batchExecuteNoQueryPacket = new BatchExecuteNoQueryPacket({
       autoCommit: this.autoCommitMode,
       casInfo: this._CASInfo,
+      charset: this.charset,
       logger: this.logger,
       protocolVersion: this.brokerInfo.protocolVersion,
       sqls,
@@ -1203,6 +1212,7 @@ function _prepareExecuteOnce(sql, paramValues, paramTypes, options) {
     }
 
     const prepareExecutePacket = new PrepareExecutePacket({
+      charset: this.charset,
       autoCommit: this.autoCommitMode,
       holdable: _holdable.call(this),
       casInfo: this._CASInfo,
@@ -1216,6 +1226,12 @@ function _prepareExecuteOnce(sql, paramValues, paramTypes, options) {
       queryTimeout: this.queryTimeout,
       sql,
     });
+
+    // The values are written once the PREPARE is answered; one that cannot be
+    // (a character the charset cannot hold) is refused now, before anything
+    // goes out — thrown from the reply's parser, it closed the connection.
+    prepareExecutePacket._getParamValuesBufferLength();
+
     const packetWriter = new PacketWriter(prepareExecutePacket.getPrepareBufferLength());
 
     prepareExecutePacket.writePrepare(packetWriter);
@@ -1260,6 +1276,7 @@ function _prepareExecuteOnce(sql, paramValues, paramTypes, options) {
 function _prepareOnly(sql, prepareFlag) {
   return new Promise((resolve, reject) => {
     const packet = new PrepareExecutePacket({
+      charset: this.charset,
       prepareFlag,
       autoCommit: this.autoCommitMode,
       holdable: _holdable.call(this),
@@ -1387,6 +1404,14 @@ function isCommunicationError(err) {
 }
 
 function isErrorToReconnect(err) {
+  // Not after a reply the driver could not read: the server answered, so it
+  // ran the statement (and, with auto-commit on, committed it). Running it
+  // again on a new connection ran an INSERT twice. The connection is still
+  // dropped (see _parseBuffer); the next request opens a new one.
+  if (err && err.code === 'PROTOCOL_ERROR') {
+    return false;
+  }
+
   return isCommunicationError(err) || (Boolean(err) && RECONNECT_SERVER_CODES.has(err.code));
 }
 
@@ -1467,6 +1492,7 @@ const PREPARED_FIELDS = ['queryHandle', 'resultCacheLifetime', 'statementType', 
 function _executePrepared(prepared, paramValues, paramTypes) {
   return new Promise((resolve, reject) => {
     const packet = new PrepareExecutePacket({
+      charset: this.charset,
       autoCommit: this.autoCommitMode,
       holdable: _holdable.call(this),
       casInfo: this._CASInfo,
@@ -1503,8 +1529,10 @@ function _parseExecutePrepared(packetReader) {
     return this._callback(error);
   }
 
-  // Still the prepared statement's handle (see _parsePrepareOnly).
+  // Still the prepared statement's handle (see _parsePrepareOnly), and the
+  // same statement.
   dataPacket._isPrepared = true;
+  _inheritStatement.call(this, dataPacket);
   _register.call(this, dataPacket.queryHandle, dataPacket);
   this._callback();
 }
@@ -1570,6 +1598,8 @@ function _parseBuffer() {
   const callback = this._callback;
   const packetReader = new PacketReader();
   const reply = Buffer.concat(this._buffArr, this._totalBuffLength);
+
+  packetReader.charset = this.charset;
 
   packetReader.write(reply);
   this._buffArr = [];
@@ -1653,7 +1683,26 @@ function _protocolFailure(socket, err) {
  */
 function _register(queryHandle, packet) {
   packet._generation = this._generation;
+  // Which statement this is: a serial given when a statement is first
+  // registered, kept by later replies about the same statement (an EXECUTE of
+  // a prepared one, a NEXT_RESULT). Callers holding a handle check it, since
+  // the number alone does not name the statement (see below).
+  if (packet._stmtId === undefined) {
+    this._stmtSerial = (this._stmtSerial || 0) + 1;
+    packet._stmtId = this._stmtSerial;
+  }
   this._queryResultSets[queryHandle] = packet;
+
+  // The CAS hands each new statement the lowest free number
+  // (cas_handle.c hm_new_srv_handle), so a number is used again as soon as
+  // its statement is closed. What was remembered about the earlier statement
+  // under it — its generated keys, or that a rollback closed it — is not
+  // about this one: closeQuery() skipped the close, and getGeneratedKeys()
+  // answered with the earlier INSERT's keys.
+  const shown = toPublicHandle(Number(queryHandle), this._generation);
+
+  this._generatedKeys.delete(shown);
+  this._endedHandles.delete(shown);
 }
 
 function _parseBufferForNewProtocol(packetReader) {
@@ -1819,6 +1868,15 @@ function _parseGetSchemaBuffer(packetReader) {
 
   if (error) {
     return this._callback(error);
+  }
+
+  // No rows: nothing to fetch, as the JDBC driver does (UStatement.moveCursor
+  // never fetches an empty result). The server answers a FETCH for some
+  // empty results — the primary key of a table that does not exist, a
+  // privilege pattern that matches nothing — with CAS_ER_NO_MORE_DATA, so
+  // these failed instead of returning [].
+  if (!(dataPacket.resultTuple > 0)) {
+    return this._callback(undefined, []);
   }
 
   _parseWriteFetchSchema.call(this);
@@ -2228,6 +2286,7 @@ function _queryNewProtocol(sql, options) {
 
   return new Promise((resolve, reject) => {
     const executeQueryPacket = new ExecuteQueryPacket({
+      charset: this.charset,
       autoCommit: this.autoCommitMode,
       holdable: _holdable.call(this),
       casInfo: this._CASInfo,
@@ -2290,8 +2349,8 @@ CoraDBConnection.prototype.fetch = function (queryHandle, all, callback) {
  * the handle now in the table under that number is from another login.
  * @private
  */
-CoraDBConnection.prototype._fetchFor = function (queryHandle, all, generation) {
-  return _fetchQueued.call(this, queryHandle, all, generation);
+CoraDBConnection.prototype._fetchFor = function (queryHandle, all, generation, owner) {
+  return _fetchQueued.call(this, queryHandle, all, generation, undefined, false, owner);
 };
 
 /**
@@ -2301,13 +2360,14 @@ CoraDBConnection.prototype._fetchFor = function (queryHandle, all, generation) {
  * reads its rows. Resolves with that packet. Queued like a fetch.
  * @private
  */
-CoraDBConnection.prototype._nextResultFor = function (queryHandle, generation) {
+CoraDBConnection.prototype._nextResultFor = function (queryHandle, generation, owner) {
   return new Promise((resolve, reject) => {
     this._queue.unshift(done => {
       const { fulfil, fail } = settle(resolve, reject, undefined, done);
       const current = this.connectionOpened ? this._queryResultSets[queryHandle] : undefined;
 
-      if (!current || current._generation !== generation || this._generation !== generation) {
+      if (!current || current._generation !== generation || this._generation !== generation ||
+          (owner !== undefined && current._stmtId !== owner._stmtId)) {
         const ended = !this.connectionOpened || this._generation !== generation;
 
         return fail(driverError(
@@ -2339,9 +2399,25 @@ function _parseNextResultBuffer(packetReader) {
     return this._callback(error);
   }
 
+  // The same statement, moved on to its next result.
+  _inheritStatement.call(this, dataPacket);
   _register.call(this, dataPacket.queryHandle, dataPacket);
 
   this._callback(undefined, dataPacket);
+}
+
+/**
+ * A reply about the statement already registered under its handle (an
+ * EXECUTE of a prepared statement, a NEXT_RESULT) keeps that statement's
+ * serial (see _register).
+ * @private
+ */
+function _inheritStatement(dataPacket) {
+  const current = this._queryResultSets[dataPacket.queryHandle];
+
+  if (current && current._generation === this._generation && current._stmtId !== undefined) {
+    dataPacket._stmtId = current._stmtId;
+  }
 }
 
 /**
@@ -2398,7 +2474,7 @@ function fromEndedSession(h) {
   return h.generation !== undefined && this.connectionOpened && h.generation !== this._generation;
 }
 
-function _fetchQueued(queryHandle, all, generation, callback, publicHandle) {
+function _fetchQueued(queryHandle, all, generation, callback, publicHandle, owner) {
   return new Promise((resolve, reject) => {
     this._queue.unshift(done => {
       const query = new Query(callback);
@@ -2406,7 +2482,7 @@ function _fetchQueued(queryHandle, all, generation, callback, publicHandle) {
 
       this.logger.info(`fetch: queryHandle = ${queryHandle}`);
 
-      _fetch.call(this, queryHandle, all, generation)
+      _fetch.call(this, queryHandle, all, generation, owner)
         .then(response => {
           if (publicHandle) {
             response.queryHandle = toPublicHandle(response.queryHandle, generation);
@@ -2419,12 +2495,19 @@ function _fetchQueued(queryHandle, all, generation, callback, publicHandle) {
   });
 }
 
-function _fetch(queryHandle, all, generation) {
+/**
+ * `owner`, when given, is the packet the caller's handle was registered with:
+ * the number alone does not name it, since the CAS reuses a closed handle's
+ * number for the next statement (a Cursor whose handle a rollback closed read
+ * the next query's rows, see _register).
+ */
+function _fetch(queryHandle, all, generation, owner) {
   return new Promise((resolve, reject) => {
     const packet = this.connectionOpened ? this._queryResultSets[queryHandle] : undefined;
     let results = null;
 
-    if (!packet || (generation !== undefined && packet._generation !== generation)) {
+    if (!packet || (generation !== undefined && packet._generation !== generation) ||
+        (owner !== undefined && packet._stmtId !== owner._stmtId)) {
       const ended = !this.connectionOpened || (generation !== undefined && generation !== this._generation);
 
       return reject(driverError(
@@ -2547,12 +2630,15 @@ CoraDBConnection.prototype.closeQuery = function (queryHandle, callback) {
  * session took the handle with it, and the number may now be someone else's.
  * @private
  */
-CoraDBConnection.prototype._releaseHandle = function (queryHandle, generation) {
+CoraDBConnection.prototype._releaseHandle = function (queryHandle, generation, owner) {
   return new Promise((resolve) => {
     this._queue.unshift(done => {
       const packet = this._queryResultSets[queryHandle];
 
-      if (!this.connectionOpened || !packet || packet._generation !== generation || this._generation !== generation) {
+      // `owner`: the packet the caller's handle was registered with. Another
+      // statement under the same number (see _register) is not closed.
+      if (!this.connectionOpened || !packet || packet._generation !== generation || this._generation !== generation ||
+          (owner !== undefined && packet._stmtId !== owner._stmtId)) {
         done();
         return resolve();
       }
@@ -2828,7 +2914,7 @@ CoraDBConnection.prototype.getQueryPlan = function (sql, callback) {
  */
 function _getQueryPlan(sql) {
   return new Promise((resolve, reject) => {
-    const packet = new GetQueryInfoPacket({ casInfo: this._CASInfo, sql });
+    const packet = new GetQueryInfoPacket({ casInfo: this._CASInfo, charset: this.charset, sql });
     const packetWriter = new PacketWriter(packet.getBufferLength());
     const socket = this._socket;
 
@@ -3249,10 +3335,11 @@ CoraDBConnection.prototype.abort = function (reason, callback) {
 
   this._socketCurrentEventCallback = undefined;
 
-  // A session with auto-commit off takes its transaction with it; requests
-  // made after this one must not carry on in a new one (see
-  // `_ensureConnected`).
-  if (this.connectionOpened && this.autoCommitMode === false) {
+  // A session with auto-commit off takes its open transaction with it;
+  // requests made after this one must not carry on in a new one (see
+  // `_ensureConnected`). With none open (CAS info status), as in JDBC, the
+  // next request simply reconnects.
+  if (this.connectionOpened && this.autoCommitMode === false && _transactionActive.call(this)) {
     this._transactionLost = true;
   }
 
@@ -3279,8 +3366,9 @@ CoraDBConnection.prototype.abort = function (reason, callback) {
 };
 
 /**
- * Turn auto-commit off. Nothing is sent to the server: the transaction begins
- * with the next statement, and lasts until `commit()` or `rollback()`.
+ * Turn auto-commit off: `setAutoCommitMode(false)`, which commits what is
+ * pending when the mode changes. The transaction lasts until `commit()` or
+ * `rollback()`.
  *
  * @deprecated Prefer `transaction(fn)`, which commits or rolls back for you,
  * or `setAutoCommitMode(false)`, which says what this does.
@@ -3291,8 +3379,9 @@ CoraDBConnection.prototype.beginTransaction = function (callback) {
 };
 
 /**
- * Turn auto-commit back on. It neither commits nor rolls back what is pending:
- * call `commit()` or `rollback()` first.
+ * Turn auto-commit back on: `setAutoCommitMode(true)`, which commits the
+ * transaction when the mode changes (as JDBC's setAutoCommit(true)). Call
+ * `rollback()` first to discard it.
  *
  * @deprecated Prefer `transaction(fn)`, or `setAutoCommitMode(true)`, which
  * says what this does.
@@ -3305,7 +3394,8 @@ CoraDBConnection.prototype.endTransaction = function (callback) {
 /**
  * Set session auto-commit mode.
  *
- * Nothing is sent: the mode goes with each statement. It takes effect in
+ * When the mode changes, what is pending is committed first (as JDBC's
+ * setAutoCommit()); the mode then goes with each statement. It takes effect in
  * queue order, behind every request made before this call — so statements
  * already queued run in the mode they were queued in. (It used to change at
  * once, so `sql(insert)` followed by `transaction(...)` ran the insert inside
@@ -3552,6 +3642,7 @@ function _getSchema(schemaType, tableNameFilter) {
   return new Promise((resolve, reject) => {
     const getSchemaPacket = new GetSchemaPacket({
       casInfo: this._CASInfo,
+      charset: this.charset,
       protocolVersion: this.brokerInfo.protocolVersion,
       schemaType: schemaType,
       shardId: this.shardId,
@@ -3680,8 +3771,12 @@ function _lobWrite(lobObject, offset, data) {
     }
 
     if (typeof data === 'string') {
-      // Convert CLOB into a binary buffer.
-      data = Helpers.getBufferFromString(data);
+      // CLOB text, in the connection's charset (as JDBC's CORADBClob).
+      try {
+        data = Text.encode(data, this.charset);
+      } catch (err) {
+        return reject(err);
+      }
     }
 
     // Two positions, kept apart: where the next chunk goes in the LOB, and
@@ -3787,7 +3882,7 @@ function _lobRead(lobObject, offset, length) {
       let data = Buffer.concat(buffers, totalReadLen);
 
       if (lobObject.lobType === CASConstants.CoraDBDataType.CCI_U_TYPE_CLOB) {
-        data = data.toString();
+        data = data.toString(this.charset);
       }
 
       resolve({
@@ -3911,12 +4006,24 @@ CoraDBConnection.DB_PARAMS = DB_PARAMS;
  * @param callback
  */
 CoraDBConnection.prototype.setDatabaseParameter = function (parameter, value, callback) {
+  let number;
+
+  try {
+    number = dbParamNumber(parameter);
+  } catch (err) {
+    return new Promise((resolve, reject) => dropped(reject, callback)(err));
+  }
+
+  // AUTO_COMMIT is the connection's auto-commit mode: set through
+  // setAutoCommitMode(), which commits on a change and keeps the driver's
+  // bookkeeping. Sent as a parameter it changed only the server's flag, and
+  // the driver went on in the old mode. (The JDBC driver does not send it.)
+  if (number === CASConstants.CCIDbParam.CCI_PARAM_AUTO_COMMIT) {
+    return this.setAutoCommitMode(Boolean(value), callback);
+  }
+
   return new Promise((resolve, reject) => {
-    try {
-      parameter = dbParamNumber(parameter);
-    } catch (err) {
-      return dropped(reject, callback)(err);
-    }
+    parameter = number;
 
     this._queue.push((done) => {
       const { fulfil, fail } = settle(resolve, reject, callback, done);
@@ -3968,12 +4075,22 @@ function _setDatabaseParameter(parameter, value) {
  * @param callback
  */
 CoraDBConnection.prototype.getDatabaseParameter = function (parameter, callback) {
+  let number;
+
+  try {
+    number = dbParamNumber(parameter);
+  } catch (err) {
+    return new Promise((resolve, reject) => dropped(reject, callback)(err));
+  }
+
+  // The server does not answer AUTO_COMMIT (CAS_ER_PARAM_NAME): it is the
+  // connection's own mode, 1 or 0.
+  if (number === CASConstants.CCIDbParam.CCI_PARAM_AUTO_COMMIT) {
+    return adaptPromise(Promise.resolve(this.getAutoCommitMode() ? 1 : 0), callback);
+  }
+
   return new Promise((resolve, reject) => {
-    try {
-      parameter = dbParamNumber(parameter);
-    } catch (err) {
-      return dropped(reject, callback)(err);
-    }
+    parameter = number;
 
     this._queue.push((done) => {
       const { fulfil, fail } = settle(resolve, reject, callback, done);

@@ -42,7 +42,7 @@ parametrize SQL statements, etc.
 - Support for [LOB](https://www.coradb.ai/manual/en/10.1/sql/datatype.html#blob-clob-data-types) (Binary and Character) objects.
 - Support for [ENUM](https://www.coradb.ai/manual/en/10.1/sql/datatype.html#enum-data-type) data types.
 - SET, MULTISET and SEQUENCE (LIST) values, read as arrays and bound as parameters.
-- Strings decoded in their column's charset (UTF-8, ISO-8859-1, binary).
+- Strings decoded in their column's charset (UTF-8, ISO-8859-1, binary); text sent in UTF-8 or ISO-8859-1 (the `charset` option).
 - Generated keys, a connection check (`isValid()`), a server-side query timeout, query plans and cancelling a running statement.
 - Several results from one request (`executeMulti()`), read as the JDBC driver reads them.
 - The JDBC driver's protocol behaviour: holdable results, statement-pooling and reconnect retries, session ids, current error codes (see [As the JDBC driver does it](#as-the-jdbc-driver-does-it)).
@@ -385,7 +385,17 @@ The driver follows the CoraDB JDBC driver in what it sends and how it reacts:
 - **A statement is run once more on a new connection** after a lost connection
   or a server-side disconnect (errors -111, -199, -224, -677), when it was the
   first statement of its transaction — nothing done before it is lost. Not
-  after you `close()` or `abort()` the connection.
+  after you `close()` or `abort()` the connection, and not after a reply the
+  driver could not read (the server may have run the statement). The server
+  answers a login with a transaction open, so after an explicit `connect()`
+  the first statement is not run again either, as with JDBC.
+- **A lost transaction is reported.** When the session goes while auto-commit
+  is off and the server had reported a transaction open, the next requests
+  fail with `TRANSACTION_LOST` until `rollback()`, `setAutoCommitMode()`,
+  `connect()` or `close()`. With nothing pending, the driver reconnects
+  silently, as JDBC does.
+- **Text goes out in the connection's charset** (the `charset` option, JDBC's
+  `charSet`), UTF-8 by default.
 - **A reconnect asks for the same session**: the driver sends back the session
   id the server gave it at the last login, as the JDBC driver does, so a server
   that still holds the session (its `@variables`, `LAST_INSERT_ID()`) can resume
@@ -443,6 +453,9 @@ If there is a vital need to run queries in parallel, developers can use connecti
      *  11. `queryTimeout`: how long the server lets a statement run, in
      *     milliseconds (see "The server's query timeout"). Defaults to `0`
      *     (none). Since 0.9.9.
+     *  12. `charset`: `'utf-8'` or `'iso-8859-1'` (also `'latin1'`), the
+     *     charset text goes out and is read in (see "Setting the charset").
+     *     Defaults to `'utf-8'`.
      */
 
     // All arguments are optional in which case default values will be set.
@@ -466,7 +479,8 @@ The following example shows how to create a client by providing an object of con
         maxConnectionRetryCount: maxConnectionRetryCount,
         logger: logger,
         requestTimeoutMs: 30000,
-        queryTimeout: 60000
+        queryTimeout: 60000,
+        charset: 'utf-8'
     });
 
 ### Establishing a connection
@@ -609,6 +623,22 @@ After 2 seconds, the script will timeout with an error like:
 
     { [Error: connect ETIMEDOUT] }
 
+#### Setting the charset
+
+    const client = CoraDB.createConnection({ ..., charset: 'iso-8859-1' });
+
+The `charset` option is the JDBC driver's `charSet`: the charset SQL text,
+string parameters, schema patterns and CLOB text are sent in, and column names,
+default values and query plans are read in. It is `'utf-8'` by default; the
+other is `'iso-8859-1'` (also `'latin1'`). Column values are always read in
+their column's own charset, which the server sends with each column.
+
+Set it to the charset the database was created with. Sent to an ISO-8859-1
+database as UTF-8, `'café'` is stored as `'cafÃ©'`. A character the charset
+cannot hold (`'€'` in ISO-8859-1) is refused with `INVALID_PARAMETER` before
+anything is sent. `client.charset` says which one the connection uses
+(`'utf8'` or `'latin1'`).
+
 #### Setting CoraDB Server Parameters
 
     client.getDatabaseParameter(paramType);
@@ -641,6 +671,12 @@ needed in the driver and this is what we did in the 2.0 release.
 Please note one exception - the `CCI_PARAM_MAX_STRING_LENGTH` parameter **cannot** be set 
 programmatically from code as it is a CoraDB Broker parameter and the client can only query
 its current value.
+
+`AUTO_COMMIT` is the connection's own mode, not a server setting: setting it is
+`setAutoCommitMode(Boolean(value))` (which commits when the mode changes), and
+reading it answers `1` or `0` without asking the server. `ISOLATION_LEVEL`
+takes 4 (READ COMMITTED, the server's default), 5 (REPEATABLE READ) or 6
+(SERIALIZABLE); the server refuses 1-3.
 
 Let’s see some examples. First, let set the value of the `ISOLATION_LEVEL` parameter:
 

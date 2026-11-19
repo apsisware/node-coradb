@@ -1,6 +1,7 @@
 'use strict';
 
 const expect = require('chai').expect;
+const CoraDB = require('../../index');
 const testSetup = require('./testSetup');
 const CAS = require('../../src/constants/CASConstants');
 const OpenDatabasePacket = require('../../src/packets/OpenDatabasePacket');
@@ -13,9 +14,9 @@ const OpenDatabasePacket = require('../../src/packets/OpenDatabasePacket');
 describe('CoraDBConnection', function () {
   describe('as the JDBC driver does it', function () {
     const TABLE_NAME = 'tbl_test';
-    // Its name matches `athlete_result` as a LIKE pattern (`_` is any one
+    // Its name matches `event_gender` as a LIKE pattern (`_` is any one
     // character), not as a name.
-    const LOOKALIKE = 'athletexresult';
+    const LOOKALIKE = 'eventxgender';
 
     this.timeout(20000);
 
@@ -70,6 +71,59 @@ describe('CoraDBConnection', function () {
         expect(total).to.equal(1935);
         await client.setAutoCommitMode(true);
       } finally {
+        await client.close();
+      }
+    });
+
+    it('reports primary-key and NOT NULL columns as not nullable (isNullable = !is_non_null)', async function () {
+      const client = testSetup.createDefaultCoraDBDemodbConnection();
+
+      try {
+        // athlete: id INTEGER NOT NULL (the primary key), last_name VARCHAR(32)
+        // NOT NULL, birth_date DATE (nullable). The driver used to report them
+        // the other way round.
+        const expected = [['id', false], ['last_name', false], ['birth_date', true]];
+
+        const text = await client.sql('SELECT id, last_name, birth_date FROM athlete WHERE ROWNUM <= 1');
+        const bound = await client.sql('SELECT id, last_name, birth_date FROM athlete WHERE id = ?', [0]);
+
+        expect(text.columns.map((c) => [c.name, c.nullable])).to.deep.equal(expected);
+        expect(bound.columns.map((c) => [c.name, c.nullable])).to.deep.equal(expected);
+      } finally {
+        await client.close();
+      }
+    });
+
+    it('talks ISO-8859-1 to an ISO-8859-1 database with charset: iso-8859-1 (charSet)', async function () {
+      // The dataset is ISO-8859-1. Sent as UTF-8 (the default), U+00E9 would
+      // be stored as two characters.
+      const client = CoraDB.createConnection(Object.assign({}, testSetup.config, { charset: 'iso-8859-1' }));
+      const reader = testSetup.createDefaultCoraDBDemodbConnection();
+      const word = 'caf' + String.fromCharCode(0xe9);
+
+      try {
+        await client.execute(`CREATE TABLE ${TABLE_NAME}(id INT, s VARCHAR(20))`);
+        await client.execute(`INSERT INTO ${TABLE_NAME} VALUES (1, '${word}')`);
+        await client.sql(`INSERT INTO ${TABLE_NAME} VALUES (?, ?)`, [2, word]);
+
+        const { rows } = await client.sql(`SELECT id, s, CHAR_LENGTH(s) AS n FROM ${TABLE_NAME} WHERE s = ? ORDER BY id`, [word]);
+
+        expect(rows.map((r) => [r.id, r.s, Number(r.n)])).to.deep.equal([[1, word, 4], [2, word, 4]]);
+
+        // Values are read in their column's charset, whatever the connection's.
+        const back = await reader.sql(`SELECT s FROM ${TABLE_NAME} WHERE id = 1`);
+
+        expect(back.rows[0].s).to.equal(word);
+
+        // A character ISO-8859-1 has no byte for is refused, not sent.
+        await client.sql(`INSERT INTO ${TABLE_NAME} VALUES (3, ?)`, [String.fromCharCode(0x20ac)])
+          .then(() => {
+            throw new Error('The euro sign should have been refused.');
+          }, (err) => {
+            expect(err.code).to.equal('INVALID_PARAMETER');
+          });
+      } finally {
+        await reader.close();
         await client.close();
       }
     });
@@ -140,10 +194,13 @@ describe('CoraDBConnection', function () {
       try {
         await client.execute(`CREATE TABLE ${LOOKALIKE} (id INT UNIQUE)`);
 
-        const constraints = await client.getSchema(CAS.CoraDBSchemaType.CCI_SCH_CONSTRAINT, 'athlete_result');
+        // event_gender's own UNIQUE index. (This used athlete_result and its
+        // athlete_result_medal_code_idx, which the dataset no longer has: the
+        // foreign key's index covers medal_code.)
+        const constraints = await client.getSchema(CAS.CoraDBSchemaType.CCI_SCH_CONSTRAINT, 'event_gender');
         const names = constraints.map((c) => c.ConstraintName);
 
-        expect(names).to.include('athlete_result_medal_code_idx');
+        expect(names).to.include('u_event_gender_gender');
         expect(names).to.not.include(`u_${LOOKALIKE}_id`);
       } finally {
         await client.close();

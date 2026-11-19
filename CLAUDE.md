@@ -4,7 +4,7 @@ Guidance for AI coding assistants (and humans) working in this repository.
 
 ## What this is
 
-**node-coradb** (`@coradb/node-coradb`, 1.0.0) — the official Node.js driver
+**node-coradb** (`@coradb/node-coradb`, 1.0.1) — the official Node.js driver
 for [CoraDB](https://www.coradb.ai), a relational + graph database. Pure
 JavaScript (CommonJS), no native code; it talks to the CoraDB broker / CAS over
 raw TCP. One runtime dependency: `luxon` (time-zone values). Node.js >= 20.
@@ -44,30 +44,48 @@ test/
 - **Handles belong to their login.** Public handle =
   `(generation - 1) * 0x100000 + serverHandle`; packets carry `_generation`.
   After a reconnect an old handle is refused (`NO_ACTIVE_QUERY`), never used
-  on the new session. `close()` / `abort()` bump `_closes`, so a retry started
-  before them does not reconnect.
+  on the new session. The CAS hands a closed handle's number to the next
+  statement, so each registered packet carries a `_stmtId` (kept from PREPARE
+  to its EXECUTEs, `_inheritStatement`): fetch / next-result / close calls pass
+  their owner packet and are refused when the number now belongs to another
+  statement. `close()` / `abort()` bump `_closes`, so a retry started before
+  them does not reconnect.
 - **CAS info**: every reply's 4-byte CAS info is kept (`_parseBuffer`) and sent
   with the next request. Byte 0 is the transaction status: COMMIT / ROLLBACK
-  are sent only when it says a transaction is open.
+  are sent only when it says a transaction is open. The real CAS answers the
+  login with ACTIVE (the fake CAS does too).
 - **Transactions (as JDBC)**: `setAutoCommitMode()` commits when the mode
-  changes; a session lost with auto-commit off fails later requests with
-  `TRANSACTION_LOST` until `rollback()` / `setAutoCommitMode()` / `connect()` /
-  `close()`; a reconnect-and-retry happens only for reconnectable errors
-  (-111, -199, -224, -677, communication errors) when no transaction was open;
+  changes; a session lost with auto-commit off **and** a transaction open (CAS
+  info) fails later requests with `TRANSACTION_LOST` until `rollback()` /
+  `setAutoCommitMode()` / `connect()` / `close()`; a reconnect-and-retry
+  happens only for reconnectable errors (-111, -199, -224, -677, communication
+  errors) when no transaction was open — never after `PROTOCOL_ERROR` (the
+  server may have run the statement);
   a statement dropped by statement pooling (-10024) is prepared again (pinned
   from protocol V7).
 - **Login**: client info flags `CAS_RENEWED_ERROR_CODE | CAS_SUPPORT_HOLDABLE_RESULT`;
   the reply's 20-byte session id is sent back at the next login. The CoraDB
   server does not resume a session after an abrupt disconnect — never rely on
   session variables surviving one.
-- **Errors**: every rejection is an `Error` (`CoraDBError`, or
-  `CoraDBBatchError` for batches) built with `driverError()` / `serverError()`.
-  CAS codes are in the renewed numbering (`-10007`, not `-1007`).
+- **Errors**: every rejection is an `Error`: a `CoraDBError` (or
+  `CoraDBBatchError` for batches) built with `driverError()` / `serverError()`,
+  except a socket error on the request in flight, which passes through as Node
+  reports it (ECONNRESET, ...). CAS codes are in the renewed numbering
+  (`-10007`, not `-1007`). Nothing may throw from a reply's parser for a
+  reason the request could have been refused for before it was sent: there it
+  becomes `PROTOCOL_ERROR` and closes the connection.
 - **Values**: one decoder (`ValueDecoder.readValue`) for every reply; a value
   is always exactly `size` bytes, an undecodable one comes back as
   `{ type, typeCode, raw }`, never an Error. BIGINT / NUMERIC that a number
   would change come back as strings; dates and times are wall-clock values in
-  the Date's UTC fields; strings are decoded in the column's charset.
+  the Date's UTC fields; strings are decoded in the column's charset. OBJECT
+  and GRAPH_OBJECT are 8-byte OIDs (`'OID:@page|slot|volume'`).
+- **Charset** (`src/charset.js`, JDBC's `charSet`): the `charset` option
+  ('utf8' default, or 'latin1') encodes SQL text, string parameters, schema
+  patterns and CLOB text (`PacketWriter._writeNullTerminatedString(value,
+  charset)`; lengths with `Text.byteLength`), and is the `PacketReader`'s
+  default for text without a column charset (names, default values, plans).
+  A character the charset cannot hold is refused, never replaced.
 - **Binding**: values go through `params.js` (`bind()` / `checkTyped()`),
   which refuses anything it cannot send before a byte is written. Collection
   parameters always go on the wire as **SEQUENCE** (as JDBC's
@@ -78,7 +96,9 @@ test/
   the reading.
 - **Classic text formatter** (`Helpers._sqlFormat`, used when the classic
   methods get `params`): quotes are doubled, no backslash escapes
-  (`no_backslash_escapes=yes`); negatives in parentheses. Prefer server-side
+  (`no_backslash_escapes=yes`); negatives in parentheses; inside MATCH /
+  PATH_COMP a `[` after `-` is an edge pattern (its `?` are placeholders),
+  elsewhere `[...]` is a quoted name. Prefer server-side
   binding (`sql()`, `prepare()`, `executeWithTypedParams()`) in new code.
 
 ## Commands
@@ -103,7 +123,8 @@ PowerShell; `*>` is PowerShell-only). One file:
   `localhost:33000` (`test/db-test/testSetup/connection.json`;
   e2e: `test/e2e-test/helpers.js`, overridable with `CORADB_HOST`, `CORADB_PORT`,
   `CORADB_USER`, `CORADB_PASSWORD`, `CORADB_DATABASE`). It has 11 tables and 4
-  views (`TABLE_COUNT = 15`) and is **ISO-8859-1** — keep test strings ASCII.
+  views (`TABLE_COUNT = 15`) and is **ISO-8859-1** — keep test strings ASCII,
+  except on a connection with `charset: 'iso-8859-1'`.
   Never change the dataset; tests read its rows (e.g. `athlete_result`: 1935 rows).
 - **Test tables are not part of the schema.** Each suite creates its own tables
   and drops them before it starts and after it ends: db-tests through

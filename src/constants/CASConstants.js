@@ -109,6 +109,8 @@ exports.CoraDBStatementType = {
 /**
  * Define CoraDB Isolation levels constants
  */
+// The server accepts 4-6 only (dbtran_def.h: TRAN_MINVALUE_ISOLATION 4); 1-3
+// are kept as names but refused by it. Its default is READ COMMITTED (4).
 exports.CoraDBIsolationLevel = {
   TRAN_UNKNOWN_ISOLATION: 0x00,
   TRAN_COMMIT_CLASS_UNCOMMIT_INSTANCE: 0x01,
@@ -117,7 +119,7 @@ exports.CoraDBIsolationLevel = {
   TRAN_REP_CLASS_COMMIT_INSTANCE: 0x04,
   TRAN_REP_CLASS_REP_INSTANCE: 0x05,
   TRAN_SERIALIZABLE: 0x06,
-  TRAN_DEFAULT_ISOLATION: 0x01
+  TRAN_DEFAULT_ISOLATION: 0x04
 };
 
 /**
@@ -444,8 +446,9 @@ exports.getCoraDBSchemaTypeName = function (schemaType) {
  * @returns {string}
  */
 exports.getCoraDBClassTypeName = function (type) {
-  // As the JDBC driver reads them (getTables): 0 system table or view,
-  // 1 view, 2 table. A view used to be named 'Unknown (1)'.
+  // As the server sends them (cas_execute.c sch_class_info): 0 system table
+  // or view, 1 view, 2 table, 3 vertex table, 4 edge table. A view used to
+  // be named 'Unknown (1)', and vertex and edge tables 'Unknown (3)' / (4).
   switch (type) {
     case 0:
       return 'System class/view';
@@ -453,6 +456,10 @@ exports.getCoraDBClassTypeName = function (type) {
       return 'User view';
     case 2:
       return 'User class/view';
+    case 3:
+      return 'Vertex table';
+    case 4:
+      return 'Edge table';
     default:
       return 'Unknown (' + type + ')';
   }
@@ -633,7 +640,9 @@ exports.CAS_MAGIC_STRING = 'CUBRK';
 exports.CAS_MAGIC_STRING_SSL = 'CUBRS';
 
 exports.getProtocolVersion = function (version) {
-  // At this moment `node-coradb` supports at most protocol version 7.
+  // The broker reports its own version (V10 for current servers); the driver
+  // speaks at most CAS_PROTOCOL_VERSION (V9), and the CAS follows the
+  // version the client announced, so anything newer reads as V9.
   for (let protocolVersion = 0; protocolVersion <= 9; ++protocolVersion) {
     if ((CAS_PROTO_INDICATOR | protocolVersion) === version) {
       return protocolVersion;

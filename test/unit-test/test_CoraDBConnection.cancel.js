@@ -102,7 +102,8 @@ describe('test_CoraDBConnection.cancel wire format', function () {
 
     assert.deepEqual(
       [...request],
-      [0x58, 0x31, CASConstants.CAS_VERSION, 0, 0, 0, 0x01, 0x02, 0x03, 0x04]
+      // The fourth byte: the client's feature flags (renewed error codes, holdable results).
+      [0x58, 0x31, CASConstants.CAS_VERSION, 0xC0, 0, 0, 0x01, 0x02, 0x03, 0x04]
     );
 
     await listener.stop();

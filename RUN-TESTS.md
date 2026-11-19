@@ -41,11 +41,11 @@ retries, the run can appear to hang before failing.
 
 | Suite | Tests |
 | --- | --- |
-| Unit (no server) | 319 |
+| Unit (no server) | 347 |
 | Unit tests that need the server (time zones) | 4 |
-| Database tests | 284 |
+| Database tests | 286 |
 | End-to-end tests | 15 |
-| **Total** (`npm test`) | **622** |
+| **Total** (`npm test`) | **652** |
 
 ## Run everything
 
@@ -86,7 +86,7 @@ npx mocha --require test/db-test/testSetup/suiteHooks.js "test/db-test/test_*.js
 ```
 
 The suite cleans up after itself. `suiteHooks.js` drops the tables the
-db-tests create (`tbl_test`, `test_tran`, `ces_temp`, `athletexresult`) before the first test
+db-tests create (`tbl_test`, `test_tran`, `ces_temp`, `eventxgender`) before the first test
 and after the last one, so a run starts on the official `olympics1988-2004`
 schema even when an earlier run stopped half way, and leaves it as it was.
 

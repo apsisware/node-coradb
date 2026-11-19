@@ -39,6 +39,15 @@ export interface ConnectionOptions {
   requestTimeoutMs?: number;
   /** How long the server lets a statement run, in milliseconds; 0 (default) for none. */
   queryTimeout?: number;
+  /**
+   * The charset text goes out and is read in, as the JDBC driver's charSet:
+   * 'utf-8' (default) or 'iso-8859-1' (also 'latin1'). SQL text, string
+   * parameters, schema patterns and CLOB text are sent in it; column names,
+   * default values and plans are read in it. Column values are read in their
+   * column's own charset. Use 'iso-8859-1' for a database created with it. A
+   * character the charset cannot hold is refused ('INVALID_PARAMETER').
+   */
+  charset?: string;
 }
 
 export interface Logger {
@@ -60,6 +69,7 @@ export function createConnection(
   logger?: Logger,
   requestTimeoutMs?: number,
   queryTimeout?: number,
+  charset?: string,
 ): CoraDBConnection;
 export const createCoraDBConnection: typeof createConnection;
 
@@ -160,7 +170,8 @@ export interface Column {
  * - BIT, VARBIT: Buffer (a copy).
  * - SET, MULTISET, SEQUENCE: an array of element values.
  * - BLOB, CLOB: LobObject.
- * - GRAPH_OBJECT: its text when the server sends text, else `{ type: 'GraphObject', raw }`.
+ * - OBJECT, GRAPH_OBJECT: the object id, 'OID:@page|slot|volume'; null when it is
+ *   all zeros; `{ type, typeCode, raw }` when it is not the 8 bytes of an id.
  * - A type the driver cannot decode: `{ type, typeCode, raw }` — never an Error.
  * - NULL: null.
  */
@@ -306,7 +317,8 @@ export declare class CoraDBConnection extends EventEmitter {
   /**
    * Emitted when the socket closes. A request in flight fails (with the socket
    * error, or code 'CONNECTION_CLOSED'), and so does every queued one. The next
-   * request reconnects — unless auto-commit was off: then requests fail with
+   * request reconnects — unless auto-commit was off and the server reported a
+   * transaction open (as the JDBC driver decides): then requests fail with
    * 'TRANSACTION_LOST' until rollback(), setAutoCommitMode() or connect().
    */
   on(event: 'disconnect', listener: () => void): this;
@@ -321,6 +333,8 @@ export declare class CoraDBConnection extends EventEmitter {
   requestTimeoutMs: number;
   /** The server-side query timeout in milliseconds; see setQueryTimeout(). */
   queryTimeout: number;
+  /** The connection's charset (see ConnectionOptions.charset). */
+  readonly charset: 'utf8' | 'latin1';
 
   // Everyday API
   /**
@@ -458,21 +472,32 @@ export declare class CoraDBConnection extends EventEmitter {
    */
   rollback(callback?: Callback): Promise<void>;
   /**
-   * Turns auto-commit off; sends nothing.
+   * setAutoCommitMode(false): commits what is pending if the mode changes.
    * @deprecated Use transaction(fn), or setAutoCommitMode(false).
    */
   beginTransaction(callback?: Callback): Promise<void>;
   /**
-   * Turns auto-commit on; neither commits nor rolls back.
+   * setAutoCommitMode(true): commits the transaction if the mode changes, as
+   * JDBC's setAutoCommit(true). Call rollback() first to discard it.
    * @deprecated Use transaction(fn), or setAutoCommitMode(true).
    */
   endTransaction(callback?: Callback): Promise<void>;
 
   // Catalog and parameters
+  /**
+   * The rows of a CAS schema request. Key columns carry `KeySeq` (the column's
+   * place in the key, from 1); an ATTRIBUTE / CLASS_ATTRIBUTE of a collection
+   * type carries `ElementType` and `ElementTypeName`.
+   */
   getSchema(schemaType: number, callback: Callback<Record<string, unknown>[]>): Promise<Record<string, unknown>[]>;
   getSchema(schemaType: number, tableNameFilter?: string, callback?: Callback<Record<string, unknown>[]>): Promise<Record<string, unknown>[]>;
-  /** A `DbParam` number or name: 'ISOLATION_LEVEL', 'isolationLevel', ... */
+  /**
+   * A `DbParam` number or name: 'ISOLATION_LEVEL', 'isolationLevel', ...
+   * AUTO_COMMIT is the connection's own mode (1 or 0): the server does not
+   * keep it, so it is not asked for.
+   */
   getDatabaseParameter(parameter: DbParamName | number, callback?: Callback<number>): Promise<number>;
+  /** AUTO_COMMIT is setAutoCommitMode(Boolean(value)); ISOLATION_LEVEL takes 4-6. */
   setDatabaseParameter(parameter: DbParamName | number, value: number, callback?: Callback): Promise<void>;
 
   // LOBs
@@ -589,7 +614,8 @@ export const IsolationLevel: Readonly<{
   TRAN_REP_CLASS_COMMIT_INSTANCE: 4;
   TRAN_REP_CLASS_REP_INSTANCE: 5;
   TRAN_SERIALIZABLE: 6;
-  TRAN_DEFAULT_ISOLATION: 1;
+  /** The server's default, READ COMMITTED. (1-3 are refused by the server; it accepts 4-6.) */
+  TRAN_DEFAULT_ISOLATION: 4;
 }>;
 
 /** 'READ COMMITTED', 'REPEATABLE READ', 'SERIALIZABLE', or undefined. */

@@ -2,6 +2,7 @@
 
 const CAS = require('../constants/CASConstants');
 const DATA_TYPES = require('../constants/DataTypes');
+const Text = require('../charset');
 
 /**
  * Ask the engine for the plan it would use for a statement.
@@ -22,6 +23,7 @@ function GetQueryInfoPacket(options) {
 
   this.casInfo = options.casInfo;
   this.sql = options.sql || '';
+  this.charset = options.charset;
   /** 0 means "this SQL", rather than a statement already prepared. */
   this.queryHandle = options.queryHandle || 0;
   this.plan = '';
@@ -45,7 +47,7 @@ GetQueryInfoPacket.prototype.write = function (writer) {
   // Three arguments, each its own length and value.
   writer.addInt(this.queryHandle);
   writer.addByte(GetQueryInfoPacket.QUERY_INFO_PLAN);
-  writer._writeNullTerminatedString(this.sql);
+  writer._writeNullTerminatedString(this.sql, this.charset);
 
   return writer;
 };
@@ -79,7 +81,7 @@ GetQueryInfoPacket.prototype.getBufferLength = function () {
     // What kind of information: its length, then the byte.
     DATA_TYPES.INT_SIZEOF + DATA_TYPES.BYTE_SIZEOF +
     // The statement: its length, the bytes, and the terminating null.
-    DATA_TYPES.INT_SIZEOF + Buffer.byteLength(this.sql) + DATA_TYPES.BYTE_SIZEOF
+    DATA_TYPES.INT_SIZEOF + Text.byteLength(this.sql, this.charset) + DATA_TYPES.BYTE_SIZEOF
   );
 };
 

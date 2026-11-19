@@ -56,7 +56,9 @@ describe('test_PrepareExecuteOldProtocolPacket', function () {
     assert.equal(prepareExecutePacket.infoArray[0].Name, "s_name");
     assert.equal(prepareExecutePacket.infoArray[0].RealName, "");
     assert.equal(prepareExecutePacket.infoArray[0].TableName, "code");
-    assert.equal(prepareExecutePacket.infoArray[0].IsNullable, false);
+    // The reply sends is_non_null = 0 for this column, so it is nullable. This
+    // asserted false while the flag was read the wrong way round.
+    assert.equal(prepareExecutePacket.infoArray[0].IsNullable, true);
     assert.equal(prepareExecutePacket.infoArray[0].DafaultValue, "");
     assert.equal(prepareExecutePacket.infoArray[0].IsAutoIncrement, false);
     assert.equal(prepareExecutePacket.infoArray[0].IsUniqueKey, false);

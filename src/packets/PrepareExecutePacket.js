@@ -4,6 +4,7 @@ const CAS = require('../constants/CASConstants');
 const DATA_TYPES = require('../constants/DataTypes');
 const ErrorMessages = require('../constants/ErrorMessages');
 const { driverError } = require('../errors');
+const Text = require('../charset');
 const ResultInfo = require('../resultset/ResultInfo');
 const PacketWriter = require('./PacketWriter');
 const { readColumnInfos, readExecuteTail, readFirstBatch, readRows, resultSetOf, returnsRows } = require('./ValueDecoder');
@@ -27,7 +28,7 @@ PrepareExecutePacket.prototype.writePrepare = function (writer) {
   writer._writeInt(this.getPrepareBufferLength() - DATA_TYPES.DATA_LENGTH_SIZEOF - DATA_TYPES.CAS_INFO_SIZE);
   writer._writeBytes(options.casInfo);
   writer._writeByte(CAS.CASFunctionCode.CAS_FC_PREPARE);
-  writer._writeNullTerminatedString(options.sql);
+  writer._writeNullTerminatedString(options.sql, options.charset);
   // HOLDABLE: a result that stays open across a commit (see ExecuteQueryPacket);
   // `prepareFlag` adds XASL_CACHE_PINNED when preparing again after
   // CAS_ER_STMT_POOLING.
@@ -225,7 +226,7 @@ PrepareExecutePacket.prototype._writeParamValue = function (writer) {
     }
 
     writer.addByte(paramType);
-    writeScalar(writer, paramType, value);
+    writeScalar(writer, paramType, value, options.charset);
   }
 };
 
@@ -239,7 +240,7 @@ function isCollectionType(type) {
  * One value, with its length, as `type`. Throws for a type that cannot be
  * sent.
  */
-function writeScalar(writer, type, value) {
+function writeScalar(writer, type, value, charset) {
   switch (type) {
     case CAS.CoraDBDataType.CCI_U_TYPE_CHAR:
     case CAS.CoraDBDataType.CCI_U_TYPE_NCHAR:
@@ -247,7 +248,7 @@ function writeScalar(writer, type, value) {
     case CAS.CoraDBDataType.CCI_U_TYPE_VARNCHAR:
     case CAS.CoraDBDataType.CCI_U_TYPE_ENUM:
     case CAS.CoraDBDataType.CCI_U_TYPE_JSON:
-      writer._writeNullTerminatedString(value);
+      writer._writeNullTerminatedString(value, charset);
       break;
 
     case CAS.CoraDBDataType.CCI_U_TYPE_SHORT:
@@ -390,7 +391,7 @@ PrepareExecutePacket.prototype._collectionPayload = function (index) {
     }
 
     if (given) {
-      writeScalar(w, elementType, item);
+      writeScalar(w, elementType, item, this.options.charset);
       continue;
     }
 
@@ -404,10 +405,10 @@ PrepareExecutePacket.prototype._collectionPayload = function (index) {
       case T.CCI_U_TYPE_INT:
       case T.CCI_U_TYPE_BIGINT:
       case T.CCI_U_TYPE_DOUBLE:
-        writeScalar(w, elementType, item);
+        writeScalar(w, elementType, item, this.options.charset);
         break;
       default:
-        w._writeNullTerminatedString(String(item));
+        w._writeNullTerminatedString(String(item), this.options.charset);
         break;
     }
   }
@@ -423,7 +424,7 @@ PrepareExecutePacket.prototype.getPrepareBufferLength = function () {
         DATA_TYPES.CAS_INFO_SIZE +
         DATA_TYPES.BYTE_SIZEOF +
         DATA_TYPES.INT_SIZEOF +
-        Buffer.byteLength(this.options.sql) + 1 +
+        Text.byteLength(this.options.sql, this.options.charset) + 1 +
         DATA_TYPES.INT_SIZEOF +
         DATA_TYPES.BYTE_SIZEOF +
         DATA_TYPES.INT_SIZEOF +
@@ -480,7 +481,7 @@ PrepareExecutePacket.prototype._getParamValuesBufferLength = function () {
                         // The length of this part.
                         DATA_TYPES.INT_SIZEOF +
                         // The bytes length of the value.
-                        Buffer.byteLength(value) +
+                        Text.byteLength(value, options.charset) +
                         // null character size.
                         DATA_TYPES.BYTE_SIZEOF;
           break;

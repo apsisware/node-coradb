@@ -259,7 +259,11 @@ describe('CoraDBConnection', function () {
 
         expect(error, 'the server should have stopped the query').to.be.an.instanceOf(Error);
         expect(error.code).to.be.a('number').that.is.below(0);
-        expect(elapsed).to.be.at.least(900);
+        // Not before ~half the timeout. The server checks the deadline against
+        // a cached clock (log_get_clock_msec(), refreshed by a background
+        // thread), so it can stop a statement a little early: a 1000 ms
+        // timeout once fired at 818 ms. (The bound used to be 900 ms.)
+        expect(elapsed).to.be.at.least(500);
         expect(elapsed).to.be.below(SERVER_BACKSTOP_MS);
 
         client.setQueryTimeout(0);

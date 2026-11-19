@@ -3,6 +3,7 @@
 const CAS = require('../constants/CASConstants');
 const ColumnMetaData = require('../resultset/ColumnMetaData');
 const DATA_TYPES = require('../constants/DataTypes');
+const Text = require('../charset');
 const NoopLogger = require('../NoopLogger');
 const { readType } = require('./ValueDecoder');
 const { driverError } = require('../errors');
@@ -78,7 +79,7 @@ GetSchemaPacket.prototype.writeRequestSchema = function (writer) {
 
   if (options.tableNamePattern) {
     // arg1: Table name pattern
-    writer._writeNullTerminatedString(options.tableNamePattern);
+    writer._writeNullTerminatedString(options.tableNamePattern, options.charset);
   } else {
     // Null; this is where restrictions should go - arg1: tableNamePattern
     writer.addNull();
@@ -261,10 +262,16 @@ GetSchemaPacket.prototype.parseFetchSchema = function (parser) {
         // Column name
         const Name = parser._parseNullTerminatedString(length);
         parser._parseInt(); // the length of the value after it, which is a fixed size
-        // sch_attribute_domain: the column data type. The low byte holds the
-        // CoraDB data-type code (the high bit is a flag).
-        const Type = parser._parseShort() & 0xFF;
+        // sch_attribute_domain: the column type, as the server encodes it for
+        // protocol V7+ (encode_ext_type_to_short): high byte 0x80 | the
+        // collection bits, low byte the type — a collection's element type.
+        // Read as the JDBC driver reads it (confirmSchemaTypeInfo). Only the
+        // low byte was read, so a SET OF INT column came back as INT.
+        const domain = parser._parseShort() & 0xFFFF;
+        const typeInfo = CAS.confirmColumnType((domain >> 8) & CAS.ColumnTypeMask.COLLECTION, domain & 0xFF);
+        const Type = typeInfo.columnType;
         const TypeName = CAS.getCoraDBDataTypeName(Type);
+        const isCollection = Type !== (domain & 0xFF) || ((domain >> 8) & CAS.ColumnTypeMask.COLLECTION) !== 0;
         parser._parseInt(); // the length of the value after it, which is a fixed size
         const Scale = parser._parseShort();
         parser._parseInt(); // the length of the value after it, which is a fixed size
@@ -313,6 +320,12 @@ GetSchemaPacket.prototype.parseFetchSchema = function (parser) {
           IsKey
         };
 
+        // For a SET, MULTISET or SEQUENCE column: what it holds.
+        if (isCollection) {
+          SchemaInfo[i].ElementType = typeInfo.elementType;
+          SchemaInfo[i].ElementTypeName = CAS.getCoraDBDataTypeName(typeInfo.elementType);
+        }
+
         break;
       }
       case CAS.CoraDBSchemaType.CCI_SCH_CONSTRAINT: {
@@ -355,8 +368,8 @@ GetSchemaPacket.prototype.parseFetchSchema = function (parser) {
         length = parser._parseInt();
         const FkColumnName = parser._parseNullTerminatedString(length);
         parser._parseInt(); // the length of the value after it, which is a fixed size
-        // Sequence type: sch_exported_keys_keySeq
-        parser._parseShort();
+        // KEY_SEQ: the column's position in the key, from 1.
+        const KeySeq = parser._parseShort();
         parser._parseInt(); // the length of the value after it, which is a fixed size
         const UpdateAction = parser._parseShort();
         parser._parseInt(); // the length of the value after it, which is a fixed size
@@ -373,6 +386,7 @@ GetSchemaPacket.prototype.parseFetchSchema = function (parser) {
           PkTableName,
           FkColumnName,
           PkColumnName,
+          KeySeq,
           UpdateAction,
           DeleteAction
         };
@@ -389,8 +403,8 @@ GetSchemaPacket.prototype.parseFetchSchema = function (parser) {
         length = parser._parseInt();
         const FkColumnName = parser._parseNullTerminatedString(length);
         parser._parseInt(); // the length of the value after it, which is a fixed size
-        // Sequence type: sch_imported_keys_keySeq
-        parser._parseShort();
+        // KEY_SEQ: the column's position in the key, from 1.
+        const KeySeq = parser._parseShort();
         parser._parseInt(); // the length of the value after it, which is a fixed size
         const UpdateAction = parser._parseShort();
         parser._parseInt(); // the length of the value after it, which is a fixed size
@@ -407,6 +421,7 @@ GetSchemaPacket.prototype.parseFetchSchema = function (parser) {
           PkTableName,
           FkColumnName,
           PkColumnName,
+          KeySeq,
           UpdateAction,
           DeleteAction
         };
@@ -418,14 +433,17 @@ GetSchemaPacket.prototype.parseFetchSchema = function (parser) {
         length = parser._parseInt();
         const ColumnName = parser._parseNullTerminatedString(length);
         parser._parseInt(); // the length of the value after it, which is a fixed size
-        // Sequence type: sch_primary_key_keySeq
-        parser._parseInt();
+        // KEY_SEQ: the column's position in the key, from 1. The server sends
+        // the rows sorted by column name, so for a key over several columns
+        // this is the only record of their order.
+        const KeySeq = parser._parseInt();
         length = parser._parseInt();
         const KeyName = parser._parseNullTerminatedString(length);
 
         SchemaInfo[i] = {
           TableName,
           ColumnName,
+          KeySeq,
           KeyName
         };
 
@@ -488,12 +506,12 @@ GetSchemaPacket.prototype.getRequestSchemaBufferLength = function () {
         DATA_TYPES.INT_SIZEOF +
         // The length of the next part.
         DATA_TYPES.INT_SIZEOF +
-        // arg1: the pattern in UTF-8 bytes, and its NUL — or nothing, when
+        // arg1: the pattern in the connection's charset, and its NUL — or nothing, when
         // the writer sends a NULL for it (an empty or missing pattern). The
         // length used to be counted in UTF-16 units, so a pattern with a
         // non-ASCII letter sent a wrong total and the server read the rest
         // of the request out of step.
-        (options.tableNamePattern ? Buffer.byteLength(String(options.tableNamePattern)) + 1 : 0) +
+        (options.tableNamePattern ? Text.byteLength(String(options.tableNamePattern), options.charset) + 1 : 0) +
         // The length of the next part.
         // arg2: is null.
         DATA_TYPES.INT_SIZEOF +

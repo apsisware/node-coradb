@@ -1,6 +1,7 @@
 'use strict';
 const DATA_TYPES = require('./../constants/DataTypes');
 const CAS = require('../constants/CASConstants');
+const Text = require('../charset');
 
 module.exports = PacketWriter;
 
@@ -385,12 +386,14 @@ PacketWriter.prototype._writeFiller = function (bytesCount, fillerValue) {
 /**
  * Write a null-terminate string to the internal buffer
  * @param value
+ * @param charset the connection's charset ('utf8' by default; see charset.js)
  */
-PacketWriter.prototype._writeNullTerminatedString = function (value) {
+PacketWriter.prototype._writeNullTerminatedString = function (value, charset) {
   // Typecast undefined into '' and numbers into strings.
   value = value ? '' + value : '';
 
-  const stringLengthInBytes = Buffer.byteLength(value);
+  const bytes = Text.encode(value, charset);
+  const stringLengthInBytes = bytes.length;
   this._allocate(
     // the length of the string
     DATA_TYPES.INT_SIZEOF +
@@ -403,7 +406,7 @@ PacketWriter.prototype._writeNullTerminatedString = function (value) {
   // Write length in bytes.
   this._writeInt(stringLengthInBytes + /* `null` */ 1);
 
-  this._buffer.write(value, this._offset, stringLengthInBytes);
+  bytes.copy(this._buffer, this._offset);
   this._offset += stringLengthInBytes;
 
   //Write null-terminate

@@ -78,9 +78,13 @@ function readColumnInfo(parser) {
   info.RealName = parser._parseNullTerminatedString(len); // Column real name
   len = parser._parseInt();
   info.TableName = parser._parseNullTerminatedString(len); // Table name
-  info.IsNullable = (parser._parseByte() === 1); // Nullable?
+  // The server sends is_non_null (1 for NOT NULL and primary-key columns), as
+  // the JDBC driver reads it (UStatement: isNullable = byte == 0). It was read
+  // the other way round, so NOT NULL columns came back nullable.
+  info.IsNullable = (parser._parseByte() === 0);
   len = parser._parseInt();
-  info.DefaultValue = parser._parseNullTerminatedString(len); // Default value
+  // In the connection's charset, as names are (JDBC: getCharset()).
+  info.DefaultValue = parser._parseNullTerminatedString(len);
   info.IsAutoIncrement = (parser._parseByte() === 1); // Auto-increment?
   info.IsUniqueKey = (parser._parseByte() === 1); // Unique key?
   info.IsPrimaryKey = (parser._parseByte() === 1); // Primary key?
@@ -123,8 +127,9 @@ function readColumnInfos(parser, count) {
  * when it is 1, and the shard id (V5+).
  *
  * The flag is 1 when the server only learnt the result's shape at execute
- * time — a CALL, or a `?` in the select list. The description was ignored, and
- * everything after it (shard id, fetch code, the rows) was read from inside it.
+ * time — a CALL, or a `?` in the select list. The description is read here:
+ * skipping it would read everything after it (shard id, fetch code, the rows)
+ * from inside it.
  */
 function readExecuteTail(packet, parser, protocolVersion) {
   if (protocolVersion > 1) {
@@ -221,31 +226,20 @@ function numericValue(text) {
 
 // --- values ------------------------------------------------------------------------
 
-const utf8 = new TextDecoder('utf-8', { fatal: true });
-
 /**
- * A GRAPH_OBJECT (a vertex or an edge). CoraDB does not document its layout,
- * so it is not guessed at: one that is text (the server's JSON rendering) is
- * returned as that text, anything else as its bytes.
+ * An OBJECT or a GRAPH_OBJECT (a vertex or an edge): the server sends the
+ * object's id, 8 bytes — page id (int), slot id (short), volume id (short) —
+ * for both (cas_execute.c dbval_to_net_buf: db_get_graph_oid() through
+ * add_res_data_object), and the JDBC driver reads both with readOID. Read as
+ * 'OID:@page|slot|volume'; all zeros (no object) is null, as in JDBC. A
+ * GRAPH_OBJECT used to be taken for text, and came back as its bytes.
  */
-function graphValue(bytes) {
-  let end = bytes.length;
-
-  if (end > 0 && bytes[end - 1] === 0) {
-    end -= 1;
+function objectValue(parser, type, size, start, end) {
+  if (size !== DATA_TYPES.OID_SIZEOF) {
+    return unknownValue(type, parser._buffer.subarray(start, end));
   }
 
-  const body = bytes.subarray(0, end);
-
-  if (!body.includes(0)) {
-    try {
-      return utf8.decode(body);
-    } catch (err) {
-      void err; // not text
-    }
-  }
-
-  return { type: 'GraphObject', raw: Buffer.from(bytes) };
+  return parser._parseObject();
 }
 
 function unknownValue(type, bytes) {
@@ -342,7 +336,8 @@ function decode(parser, type, size, start, end, charset) {
       return parser._parseDateTimeTz(size);
 
     case T.CCI_U_TYPE_OBJECT:
-      return parser._parseObject();
+    case T.CCI_U_TYPE_GRAPH_OBJECT:
+      return objectValue(parser, type, size, start, end);
 
     case T.CCI_U_TYPE_BIT:
     case T.CCI_U_TYPE_VARBIT:
@@ -366,9 +361,6 @@ function decode(parser, type, size, start, end, charset) {
 
     case T.CCI_U_TYPE_NULL:
       return null;
-
-    case T.CCI_U_TYPE_GRAPH_OBJECT:
-      return graphValue(buffer.subarray(start, end));
 
     default:
       return unknownValue(type, buffer.subarray(start, end));
@@ -429,13 +421,21 @@ function readRows(packet, parser, tupleCount) {
 
     for (let j = 0; j < columnCount; ++j) {
       let size = parser._parseInt();
+      let type = columns[j].ColumnType;
 
-      if (size <= 0) {
+      // NULL is size -1. Size 0 is an empty BIT VARYING (the only value the
+      // server sends with no bytes at all: strings carry their NUL), which
+      // the JDBC driver reads as an empty byte[]; it used to read as NULL.
+      if (size < 0) {
         row[j] = null;
         continue;
       }
 
-      let type = columns[j].ColumnType;
+      if (size === 0) {
+        row[j] = type === T.CCI_U_TYPE_BIT || type === T.CCI_U_TYPE_VARBIT ? Buffer.alloc(0) : null;
+        continue;
+      }
+
       let charset = columns[j].Charset;
 
       if (valuesCarryType || type === T.CCI_U_TYPE_NULL) {

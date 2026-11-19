@@ -31,10 +31,12 @@ describe('test_packets.CancelRequestPacket', function () {
     assert.equal(bytesFor(1)[2], CASConstants.CAS_VERSION);
   });
 
-  it('leaves the three reserved bytes at zero', function () {
+  it('sends the client feature flags, then two reserved bytes at zero', function () {
     const buffer = bytesFor(0x7FFFFFFF);
 
-    assert.equal(buffer[3], 0);
+    // As the JDBC driver sends them: renewed error codes and holdable results.
+    // These were zeros, so a refused cancel came back in the old numbering.
+    assert.equal(buffer[3], CASConstants.CAS_RENEWED_ERROR_CODE | CASConstants.CAS_SUPPORT_HOLDABLE_RESULT);
     assert.equal(buffer[4], 0);
     assert.equal(buffer[5], 0);
   });
@@ -61,7 +63,7 @@ describe('test_packets.CancelRequestPacket', function () {
     // The format in one place, so a change to any part of it is deliberate.
     assert.deepEqual(
       [...bytesFor(0x01020304)],
-      [0x58, 0x31, CASConstants.CAS_VERSION, 0, 0, 0, 0x01, 0x02, 0x03, 0x04]
+      [0x58, 0x31, CASConstants.CAS_VERSION, 0xC0, 0, 0, 0x01, 0x02, 0x03, 0x04]
     );
   });
 

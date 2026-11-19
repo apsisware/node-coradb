@@ -29,7 +29,7 @@ exports.TABLE_COUNT = 15;
  * (suiteHooks.js), and the files that count the tables drop them again before
  * they start (dropLeftoverTestTables). The e2e suite cleans up its own.
  */
-const TEST_TABLES = ['tbl_test', 'test_tran', 'ces_temp', 'athletexresult'];
+const TEST_TABLES = ['tbl_test', 'test_tran', 'ces_temp', 'eventxgender'];
 
 exports.TEST_TABLES = TEST_TABLES;
 

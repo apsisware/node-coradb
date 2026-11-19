@@ -15,6 +15,9 @@ module.exports = PacketReader;
 function PacketReader() {
   this._buffer = null;
   this._offset = 0;
+  // The connection's charset (see charset.js): what text without a charset of
+  // its own is read in — names, default values, plans, messages.
+  this.charset = 'utf8';
 }
 
 /** The size of a session id (see OpenDatabasePacket). */
@@ -204,8 +207,8 @@ PacketReader.prototype._parseNullTerminatedString = function (length, encoding) 
 
   let valueLen = length - 1; // Get the actual null-terminated string length
   let buffer = this._buffer.subarray(this._offset, this._offset + valueLen);
-  // In the column's charset (see CAS.getCharsetEncoding); UTF-8 by default.
-  let value = buffer.toString(encoding || 'utf8');
+  // In the column's charset (see CAS.getCharsetEncoding), or the connection's.
+  let value = buffer.toString(encoding || this.charset || 'utf8');
 
   this._offset += valueLen;
   this._parseByte(); // Read also the null-terminate
@@ -432,7 +435,16 @@ PacketReader.prototype._parseNumeric = function (size) {
  * @return {String}
  */
 PacketReader.prototype._parseObject = function () {
-  return 'OID:@' + this._parseInt() + '|' + this._parseShort() + '|' + this._parseShort();
+  const page = this._parseInt();
+  const slot = this._parseShort();
+  const volume = this._parseShort();
+
+  // All zeros: no object, as the JDBC driver reads it (UInputBuffer.readOID).
+  if (page === 0 && slot === 0 && volume === 0) {
+    return null;
+  }
+
+  return 'OID:@' + page + '|' + slot + '|' + volume;
 };
 
 /**

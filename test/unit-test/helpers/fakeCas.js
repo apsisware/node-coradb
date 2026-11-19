@@ -37,7 +37,13 @@ const CAS = require('../../../src/constants/CASConstants');
  *   port               listen on this port rather than any free one;
  *   brokerFlags        the broker's function flag (default 0xC0: renewed
  *                      error codes and holdable results, as a CoraDB broker);
- *   statementPooling   the broker's statement-pooling byte (default 0).
+ *   statementPooling   the broker's statement-pooling byte (default 0);
+ *   brokerVersion      the protocol byte of the broker info (default 0x4A,
+ *                      V10, as a current CoraDB broker reports itself);
+ *   loginActive        the login reply's CAS info status (default true:
+ *                      a real CAS answers the login with ACTIVE).
+ *
+ * CHECK_CAS is answered as the real CAS answers it: a reply with no body.
  *
  * Like a CAS, the first byte of each reply's CAS info says whether a
  * transaction is open: set by a statement run without auto-commit, or with it
@@ -137,9 +143,10 @@ function typeBytes(out, type, opts = {}) {
   return out.byte(CAS.ColumnTypeMask.HAS_2_BYTES | flag | ((opts.charset || 0) & CAS.ColumnTypeMask.CHARSET)).byte(base);
 }
 
-function columnInfo(out, [name, type, opts]) {
+function columnInfo(out, [name, type, opts = {}]) {
   typeBytes(out, type, opts);
-  out.short(0).int(0).str(name).str(name).str('t').byte(1).int(0);
+  // is_non_null: 1 (NOT NULL) unless the column is declared { nullable: true }.
+  out.short(0).int(0).str(name).str(name).str('t').byte(opts.nullable ? 0 : 1).int(0);
   for (let i = 0; i < 7; ++i) out.byte(0);
 }
 
@@ -201,7 +208,7 @@ function readString(buf, at) {
 }
 
 async function fakeCas(options) {
-  const opts = Object.assign({ fetchSize: 2, pid: 4242, handlers: {}, brokerFlags: 0xc0, statementPooling: 0 }, options);
+  const opts = Object.assign({ fetchSize: 2, pid: 4242, handlers: {}, brokerFlags: 0xc0, statementPooling: 0, brokerVersion: 0x4a, loginActive: true }, options);
   const log = [];
   const sockets = new Set();
   let sharedNextHandle = 1;
@@ -217,7 +224,17 @@ async function fakeCas(options) {
 
     const handles = new Map();
     let sessionNextHandle = 1;
-    const nextHandleNumber = () => (opts.handlesPerSession ? sessionNextHandle++ : sharedNextHandle++);
+    // opts.reuseHandles: the lowest free number, as the real CAS hands them
+    // out (cas_handle.c hm_new_srv_handle), so a closed handle's number comes
+    // back with the next statement.
+    const nextHandleNumber = () => {
+      if (opts.reuseHandles) {
+        let h = 1;
+        while (handles.has(h)) h++;
+        return h;
+      }
+      return opts.handlesPerSession ? sessionNextHandle++ : sharedNextHandle++;
+    };
     let stage = opts.skipClientInfo ? 1 : 0;
     let pending = Buffer.alloc(0);
     let busy = Promise.resolve();
@@ -421,6 +438,12 @@ async function fakeCas(options) {
         return new Out().int(0).int(4).reply();
       }
 
+      if (fc === FC.CAS_FC_CHECK_CAS) {
+        // The real CAS sends the length (0) and the CAS info, nothing else.
+        const head = Buffer.alloc(8);
+        return head;
+      }
+
       if (fc === FC.CAS_FC_CON_CLOSE) {
         return new Out().int(0).reply();
       }
@@ -471,7 +494,9 @@ async function fakeCas(options) {
         const b = Buffer.alloc(4 + 4 + 4 + 8 + 4 + 20);
         b.writeInt32BE(b.length - 8, 0);
         b.writeInt32BE(opts.pid, 8);
-        Buffer.from([1, 1, opts.statementPooling, 0, CAS.CAS_PROTO_INDICATOR | CAS.CAS_PROTOCOL_VERSION, opts.brokerFlags, 0, 0]).copy(b, 12);
+        // The CAS info: a real CAS answers the login with status ACTIVE.
+        b[4] = opts.loginActive ? 1 : 0;
+        Buffer.from([1, 1, opts.statementPooling, 0, opts.brokerVersion, opts.brokerFlags, 0, 0]).copy(b, 12);
         b.writeInt32BE(7, 20); // CAS id
         session.copy(b, 24);
         send(b);

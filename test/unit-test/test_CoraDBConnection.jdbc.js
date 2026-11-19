@@ -201,6 +201,9 @@ describe('test_CoraDBConnection.jdbc: as the JDBC driver does it', function () {
       cas = await fakeCas({ onQuery: answer });
       open();
       await conn.connect();
+      // The CAS answers the login with ACTIVE (cas.c); a statement run with
+      // auto-commit clears it. (The fake used to answer the login INACTIVE.)
+      await conn.sql('update t set a = 0');
       await conn.setAutoCommitMode(false);
 
       await conn.commit(); // nothing done yet
@@ -287,11 +290,27 @@ describe('test_CoraDBConnection.jdbc: as the JDBC driver does it', function () {
       open();
 
       await conn.connect();
+      // As above: clear the ACTIVE the login reply carries.
+      await conn.sql('update t set a = 0');
       await conn.setAutoCommitMode(false);
       await conn.setAutoCommitMode(false);
       await conn.setAutoCommitMode(true);
 
       assert.deepStrictEqual(ends(), []);
+    });
+
+    it('commits on the first mode change after the login, which the CAS answers with ACTIVE', async function () {
+      // JDBC keeps the login reply's CAS info too (connectDB), so its
+      // setAutoCommit(false) right after connecting sends END_TRAN as well.
+      cas = await fakeCas({ onQuery: answer });
+      open();
+
+      await conn.connect();
+      await conn.setAutoCommitMode(false);
+
+      assert.deepStrictEqual(ends(), [COMMIT]);
+      await conn.setAutoCommitMode(true);
+      assert.deepStrictEqual(ends(), [COMMIT]);
     });
 
     it('keeps the mode when the commit fails', async function () {

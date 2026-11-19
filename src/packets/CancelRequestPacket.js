@@ -51,9 +51,13 @@ CancelRequestPacket.prototype.write = function (writer) {
     CancelRequestPacket.MAGIC.length
   );
   writer._writeByte(CASConstants.CAS_VERSION);
-  // Reserved. The listener reads the fixed ten bytes either way, so these
-  // cannot be left out.
-  writer._writeFiller(3, 0);
+  // The client's feature flags, as in the client-info exchange (the JDBC
+  // driver sends its driverInfo bytes here): the broker answers a refusal in
+  // the renewed numbering only when the 0x80 flag is set
+  // (broker.c send_error_to_driver). Then two reserved bytes; the listener
+  // reads the fixed ten bytes either way, so they cannot be left out.
+  writer._writeByte(CASConstants.CAS_RENEWED_ERROR_CODE | CASConstants.CAS_SUPPORT_HOLDABLE_RESULT);
+  writer._writeFiller(2, 0);
   // No length prefix: a length header in front of the magic would be read as
   // the magic itself and the request rejected.
   writer._writeInt(this.options.processId | 0);

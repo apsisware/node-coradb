@@ -1,5 +1,36 @@
 # node-coradb change log
 
+## Version 1.0.1 (Nov 19, 2026)
+
+A second review against the CoraDB server source and the JDBC driver: wrong values (column nullability, graph objects, empty BIT VARYING, collection columns in the schema), a server handle number reused under an old statement, and a statement run again after an unreadable reply are fixed, and the `charset` option (JDBC's `charSet`) is new. `MIGRATION.md` is new.
+
+- New: the `charset` connection option, as the JDBC driver's `charSet`: `'utf-8'` (default) or `'iso-8859-1'` (also `'latin1'`). SQL text, string parameters, schema patterns and CLOB text are sent in it; column names, default values, query plans and messages are read in it; column values are still read in their column's own charset. On a database created with ISO-8859-1, UTF-8 text was stored byte for byte (`'é'` came back as `'Ã©'`). A character the charset cannot hold is refused (`INVALID_PARAMETER`) before anything is sent. `connection.charset` names it. `src/charset.js`.
+- Fix: the server gives a closed statement's handle number to the next statement. A cursor, `executeMulti()` result or prepared statement whose handle had been closed (by `rollback()`, a reconnect, or its own close racing a fetch) could fetch, close or step through the new statement's result. Each now checks that the handle is still its own statement, and fails with `NO_ACTIVE_QUERY` otherwise.
+- Fix: a reply the driver could not read (`PROTOCOL_ERROR`) made it run the statement again on a new connection, though the server may already have run it. It no longer does.
+- Change: a lost session fails the next requests with `TRANSACTION_LOST` only when auto-commit was off and the server had reported a transaction open, as the JDBC driver decides (`!isActive()` reconnects silently). With nothing pending, nothing was lost.
+- Fix: a GRAPH_OBJECT value is an object id (8 bytes: page, slot, volume), as an OBJECT is, and comes back as `'OID:@page|slot|volume'`; it came back as text when its bytes happened to be valid UTF-8, and as `{ type: 'GraphObject', raw }` otherwise. An all-zero id (OBJECT or GRAPH_OBJECT) is null. A value of another size comes back as `{ type, typeCode, raw }`.
+- Fix: an empty BIT VARYING (`B''`, sent with size 0) came back as null; it is an empty Buffer.
+- Fix: `getSchema(CCI_SCH_ATTRIBUTE / CLASS_ATTRIBUTE)` read the domain of a SET, MULTISET or LIST column as a plain type; it now gives the collection type, with `ElementType` and `ElementTypeName`. `KeySeq` (the column's place in the key) is now read for PRIMARY_KEY, IMPORTED_KEYS and EXPORTED_KEYS.
+- Fix: `getSchema()` of a request that matches nothing resolves with `[]` without sending a FETCH.
+- Fix: vertex and edge tables (class types 3 and 4) are typed `'Vertex table'` and `'Edge table'` (were `'Unknown (3)'` / `'Unknown (4)'`).
+- Fix: `IsolationLevel.TRAN_DEFAULT_ISOLATION` is 4 (READ COMMITTED), the server's default; it was 1, a level the server refuses (it accepts 4-6).
+- Fix: `setDatabaseParameter('AUTO_COMMIT', v)` changed only the server's flag, and the driver went on in its old mode; it is now `setAutoCommitMode(Boolean(v))`. `getDatabaseParameter('AUTO_COMMIT')`, which the server refuses, answers the connection's own mode (1 or 0).
+- Fix: the cancel request sends the client's feature flags (`0xC0`, as JDBC), so the broker answers a refusal in the renewed error numbering.
+- Fix: `isValid()` read past the end of the server's CHECK_CAS reply, which has no body when the session is fine.
+- Fix: the text formatter (classic methods with `params`) skipped a `?` inside a MATCH edge pattern (`-[e:knows WHERE e.since > ?]->`), taking `[...]` for a quoted name, so the values went to the wrong placeholders. Inside MATCH or PATH_COMP, a `[` after a `-` is an edge pattern, as the server's lexer reads it.
+- Fix: the text formatter wrote a Date's year without padding, and the server reads a two-digit year as 19xx / 20xx; it writes four digits. An array value, which went out as the text `1,2`, is refused (`INVALID_PARAMETER`).
+- Fix: a bound NUMERIC with an exponent (`1e-7`, which is how JavaScript writes 0.0000001, or `'1.5E3'`) was refused by the server; it is sent as plain digits, as JDBC sends `BigDecimal.toPlainString()`. A leading `+` is dropped.
+- Fix: a bound JSON value with no JSON form (a function, a symbol, undefined) went out as NULL; it is refused (`INVALID_PARAMETER`).
+- Docs: `beginTransaction()` / `endTransaction()` are documented as what they do since 1.0.0 (`setAutoCommitMode()`, which commits when the mode changes); `index.d.ts` said they sent nothing.
+- Test: the pretend CAS answers as the real server does: the login with CAS info status ACTIVE (cas.c), the broker version V10, CHECK_CAS with no body. Three tests relied on an INACTIVE login and now run a statement first (with a comment); a new test checks that the first mode change after the login commits, as JDBC's does.
+- Test: the live query-timeout test allows the server to stop a statement early (at least half the timeout, was 900 ms of 1000): the server checks the deadline against a cached clock, and once stopped one at 818 ms.
+- Test: unit tests for every fix above, and a live test that a connection with `charset: 'iso-8859-1'` writes, binds and reads back `'café'` on the ISO-8859-1 dataset and refuses `'€'`.
+- Fix: column nullability was reported the wrong way round. The server sends a NOT NULL flag (`is_non_null`), and the driver read it as a nullable flag, so primary-key and NOT NULL columns came back `nullable: true` (and `IsNullable` in the column metadata) and nullable columns `nullable: false`. It is now read as the JDBC driver reads it (`isNullable = flag == 0`). Affects `columns[].nullable` of `sql()`, `cursor()`, `stream()` and `prepare().run()`.
+- Test: a unit test for both readings against the pretend CAS (which can now declare a column nullable), and a live test on `athlete` (`id` and `last_name` NOT NULL, `birth_date` nullable); `test_PrepareExecuteOldProtocolPacket.js` expected the wrong reading and is corrected.
+- Test: the live test that `getSchema(CCI_SCH_CONSTRAINT, name)` matches the name exactly now uses `event_gender` (and the look-alike table `eventxgender`): the olympics1988-2004 dataset no longer has `athlete_result_medal_code_idx`.
+- Docs: `MIGRATION.md`, a step-by-step guide to moving an application from node-cubrid to node-coradb, with a worked example; it is included in the published package.
+- Docs: `COMPARISON WITH CUBRID DRIVER.md` no longer says TIMETZ values are read as time-zone values. CoraDB has no TIMETZ type; type code 33 (`CCI_U_TYPE_TIMETZ`) is only reserved by the protocol, and a value of an unknown type comes back as `{ type, typeCode, raw }`.
+
 ## Version 1.0.0 (Nov 2, 2026)
 
 The driver now behaves like the CoraDB JDBC driver wherever the two differed on the wire or in their transaction rules, reads several results from one request, and has the bugs of the 0.9.9 review fixed. Several behaviours change on purpose (see "Change" below). [COMPARISON WITH CUBRID DRIVER.md](COMPARISON%20WITH%20CUBRID%20DRIVER.md) sums up how the driver now differs from node-cubrid.

@@ -355,6 +355,9 @@ describe('test_CoraDBConnection.review4', function () {
       let disconnects = 0;
       conn.on('disconnect', () => disconnects++);
       await conn.connect();
+      // The login reply says ACTIVE (as the real CAS does): a statement run
+      // with auto-commit clears it, so `select die` is first in its transaction.
+      await conn.sql('select 1');
 
       const first = conn.sql('select die');
       const queued = conn.sql('select 1');
@@ -503,11 +506,15 @@ describe('test_CoraDBConnection.review4', function () {
       const columns = [['g', T.CCI_U_TYPE_GRAPH_OBJECT], ['d', 'double'], ['u', 99], ['seq', T.CCI_U_TYPE_SEQUENCE], ['i', 'int']];
       const seq = Buffer.concat([Buffer.from([T.CCI_U_TYPE_INT]), int32(2), int32(4), int32(10), int32(4), int32(20)]);
       const binary = Buffer.from([0xff, 0x00, 0x01]);
+      // The server sends a vertex or an edge as its object id: page (int),
+      // slot (short), volume (short) (cas_execute.c: db_get_graph_oid). This
+      // test sent JSON text, as the driver wrongly expected.
+      const oid = Buffer.concat([int32(5), Buffer.from([0, 2, 0, 1])]);
       cas = await fakeCas({
         onQuery: () => ({
           columns,
           rows: [
-            [{ raw: Buffer.from('{"label":"Person","id":1}\0') }, 1.5, { raw: Buffer.from([1, 2, 3]) }, { raw: seq }, 7],
+            [{ raw: oid }, 1.5, { raw: Buffer.from([1, 2, 3]) }, { raw: seq }, 7],
             [{ raw: binary }, 2.5, { raw: Buffer.from([4]) }, null, 8],
           ],
         }),
@@ -516,8 +523,9 @@ describe('test_CoraDBConnection.review4', function () {
 
       const { rows } = await conn.sql('MATCH (p:Person) RETURN p');
 
-      assert.strictEqual(rows[0].g, '{"label":"Person","id":1}');
-      assert.deepStrictEqual(rows[1].g, { type: 'GraphObject', raw: binary });
+      assert.strictEqual(rows[0].g, 'OID:@5|2|1');
+      // Not the 8 bytes of an id: kept as its bytes, the row read on.
+      assert.deepStrictEqual(rows[1].g, { type: 'GraphObject', typeCode: T.CCI_U_TYPE_GRAPH_OBJECT, raw: binary });
       assert.deepStrictEqual(rows[0].u, { type: 'Unknown', typeCode: 99, raw: Buffer.from([1, 2, 3]) });
       assert.deepStrictEqual(rows[0].seq, [10, 20]);
       assert.deepStrictEqual(rows.map((r) => [r.d, r.i]), [[1.5, 7], [2.5, 8]]);

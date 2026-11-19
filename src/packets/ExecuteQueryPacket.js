@@ -2,6 +2,7 @@
 
 const CAS = require('../constants/CASConstants');
 const DATA_TYPES = require('../constants/DataTypes');
+const Text = require('../charset');
 const NoopLogger = require('../NoopLogger');
 const ResultInfo = require('../resultset/ResultInfo');
 const { readColumnInfos, readExecuteTail, readFirstBatch, readRows, resultSetOf, returnsRows } = require('./ValueDecoder');
@@ -41,7 +42,7 @@ ExecuteQueryPacket.prototype.write = function (writer) {
   writer.addInt(3);
 
   // Now goes the SQL query.
-  writer._writeNullTerminatedString(options.sql);
+  writer._writeNullTerminatedString(options.sql, options.charset);
 
   // The type of prepare CAS has to execute: with HOLDABLE, a result that stays
   // open across a commit — what the JDBC driver asks for by default
@@ -198,7 +199,7 @@ ExecuteQueryPacket.prototype.getBufferLength = function () {
         // The length of the next part.
         DATA_TYPES.INT_SIZEOF +
         // A NULL terminated SQL query string.
-        Buffer.byteLength(this.options.sql) + 1 +
+        Text.byteLength(this.options.sql, this.options.charset) + 1 +
         // The length of the next part.
         DATA_TYPES.INT_SIZEOF +
         // The type of CCI prepare.

@@ -39,6 +39,14 @@ CheckCasPacket.prototype.parse = function (parser) {
   const responseLength = parser._parseInt();
 
   this.casInfo = parser._parseBytes(DATA_TYPES.CAS_INFO_SIZE);
+
+  // The server answers a CAS that is fine with no body at all
+  // (cas_function.c fn_check_cas), as the JDBC driver expects: success.
+  if (!(responseLength > 0)) {
+    this.responseCode = 0;
+    return undefined;
+  }
+
   this.responseCode = parser._parseInt();
 
   if (this.responseCode < 0) {
