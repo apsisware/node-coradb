@@ -41,11 +41,16 @@ export interface ConnectionOptions {
   queryTimeout?: number;
   /**
    * The charset text goes out and is read in, as the JDBC driver's charSet:
-   * 'utf-8' (default) or 'iso-8859-1' (also 'latin1'). SQL text, string
+   * 'auto' (default), 'utf-8' or 'iso-8859-1' (also 'latin1'). SQL text, string
    * parameters, schema patterns and CLOB text are sent in it; column names,
    * default values and plans are read in it. Column values are read in their
-   * column's own charset. Use 'iso-8859-1' for a database created with it. A
-   * character the charset cannot hold is refused ('INVALID_PARAMETER').
+   * column's own charset. A character the charset cannot hold is refused
+   * ('INVALID_PARAMETER'). 'auto' (not in JDBC) reads the database's charset
+   * (db_root.charset) right after the first login and uses it: ISO-8859-1 for
+   * an ISO-8859-1 database, UTF-8 otherwise. If the server refuses that query,
+   * UTF-8 is kept and a warning logged. A fixed charset skips the query.
+   * A literal that names its charset (_utf8'...', _iso88591'...') is sent in
+   * it. CLOB text is UTF-8 under 'auto', the set charset otherwise.
    */
   charset?: string;
 }
@@ -333,7 +338,10 @@ export declare class CoraDBConnection extends EventEmitter {
   requestTimeoutMs: number;
   /** The server-side query timeout in milliseconds; see setQueryTimeout(). */
   queryTimeout: number;
-  /** The connection's charset (see ConnectionOptions.charset). */
+  /**
+   * The connection's charset (see ConnectionOptions.charset). With 'auto', it
+   * is 'utf8' until the first connect has read the database's.
+   */
   readonly charset: 'utf8' | 'latin1';
 
   // Everyday API

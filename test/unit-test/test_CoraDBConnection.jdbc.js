@@ -302,8 +302,12 @@ describe('test_CoraDBConnection.jdbc: as the JDBC driver does it', function () {
     it('commits on the first mode change after the login, which the CAS answers with ACTIVE', async function () {
       // JDBC keeps the login reply's CAS info too (connectDB), so its
       // setAutoCommit(false) right after connecting sends END_TRAN as well.
+      // With an explicit charset: by default ('auto') the driver reads the
+      // database's charset after the login, and closing that statement with
+      // auto-commit ends the transaction the login reported, so nothing is
+      // pending (the next test).
       cas = await fakeCas({ onQuery: answer });
-      open();
+      open({ charset: 'utf-8' });
 
       await conn.connect();
       await conn.setAutoCommitMode(false);
@@ -311,6 +315,17 @@ describe('test_CoraDBConnection.jdbc: as the JDBC driver does it', function () {
       assert.deepStrictEqual(ends(), [COMMIT]);
       await conn.setAutoCommitMode(true);
       assert.deepStrictEqual(ends(), [COMMIT]);
+    });
+
+    it('has nothing to commit after the default charset query', async function () {
+      cas = await fakeCas({ onQuery: answer });
+      open();
+
+      await conn.connect();
+      await conn.setAutoCommitMode(false);
+
+      assert.deepStrictEqual(ends(), []);
+      assert.strictEqual(cas.charsetAsked(), 1);
     });
 
     it('keeps the mode when the commit fails', async function () {

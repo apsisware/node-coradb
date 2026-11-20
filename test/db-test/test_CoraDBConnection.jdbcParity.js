@@ -114,6 +114,8 @@ describe('CoraDBConnection', function () {
         const back = await reader.sql(`SELECT s FROM ${TABLE_NAME} WHERE id = 1`);
 
         expect(back.rows[0].s).to.equal(word);
+        // And a connection with no charset option has read the database's.
+        expect(reader.charset).to.equal('latin1');
 
         // A character ISO-8859-1 has no byte for is refused, not sent.
         await client.sql(`INSERT INTO ${TABLE_NAME} VALUES (3, ?)`, [String.fromCharCode(0x20ac)])
@@ -124,6 +126,25 @@ describe('CoraDBConnection', function () {
           });
       } finally {
         await reader.close();
+        await client.close();
+      }
+    });
+
+    it("reads the database's charset with charset: 'auto' (ISO-8859-1 here)", async function () {
+      const client = CoraDB.createConnection(Object.assign({}, testSetup.config, { charset: 'auto' }));
+      const word = 'caf' + String.fromCharCode(0xe9);
+
+      try {
+        await client.connect();
+        expect(client.charset).to.equal('latin1');
+
+        await client.execute(`CREATE TABLE ${TABLE_NAME}(s VARCHAR(20))`);
+        await client.sql(`INSERT INTO ${TABLE_NAME} VALUES ('${word}')`);
+
+        const { rows } = await client.sql(`SELECT CHAR_LENGTH(s) AS n FROM ${TABLE_NAME} WHERE s = ?`, [word]);
+
+        expect(rows.map((r) => Number(r.n))).to.deep.equal([4]);
+      } finally {
         await client.close();
       }
     });

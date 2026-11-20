@@ -4,7 +4,7 @@ Guidance for AI coding assistants (and humans) working in this repository.
 
 ## What this is
 
-**node-coradb** (`@coradb/node-coradb`, 1.0.1) — the official Node.js driver
+**node-coradb** (`@coradb/node-coradb`, 1.1.0) — the official Node.js driver
 for [CoraDB](https://www.coradb.ai), a relational + graph database. Pure
 JavaScript (CommonJS), no native code; it talks to the CoraDB broker / CAS over
 raw TCP. One runtime dependency: `luxon` (time-zone values). Node.js >= 20.
@@ -81,11 +81,20 @@ test/
   the Date's UTC fields; strings are decoded in the column's charset. OBJECT
   and GRAPH_OBJECT are 8-byte OIDs (`'OID:@page|slot|volume'`).
 - **Charset** (`src/charset.js`, JDBC's `charSet`): the `charset` option
-  ('utf8' default, or 'latin1') encodes SQL text, string parameters, schema
+  ('auto' default, 'utf8' or 'latin1') encodes SQL text, string parameters, schema
   patterns and CLOB text (`PacketWriter._writeNullTerminatedString(value,
   charset)`; lengths with `Text.byteLength`), and is the `PacketReader`'s
   default for text without a column charset (names, default values, plans).
-  A character the charset cannot hold is refused, never replaced.
+  A character the charset cannot hold is refused, never replaced. 'auto' (not
+  JDBC; the default, because applications cannot know each database's
+  charset) reads `db_root.charset` once, during the first connect
+  (`_readDatabaseCharset`, sent with `connecting: true` before the connection
+  counts as open); a refused query keeps UTF-8 with a warning. Its close
+  commits, so the connection starts with no transaction open. SQL text goes
+  through `Text.encodeSql` (`isSql` in the writer): `_utf8'...'` /
+  `_iso88591'...'` literals in their own charset, a comment the charset
+  cannot hold as UTF-8. CLOB text is UTF-8 under 'auto' (`_clobCharset`). The fake CAS
+  answers it itself (`dbCharset`, `charsetAsked()`), outside `cas.log`.
 - **Binding**: values go through `params.js` (`bind()` / `checkTyped()`),
   which refuses anything it cannot send before a byte is written. Collection
   parameters always go on the wire as **SEQUENCE** (as JDBC's

@@ -42,7 +42,7 @@ ExecuteQueryPacket.prototype.write = function (writer) {
   writer.addInt(3);
 
   // Now goes the SQL query.
-  writer._writeNullTerminatedString(options.sql, options.charset);
+  writer._writeNullTerminatedString(options.sql, options.charset, true);
 
   // The type of prepare CAS has to execute: with HOLDABLE, a result that stays
   // open across a commit — what the JDBC driver asks for by default
@@ -199,7 +199,7 @@ ExecuteQueryPacket.prototype.getBufferLength = function () {
         // The length of the next part.
         DATA_TYPES.INT_SIZEOF +
         // A NULL terminated SQL query string.
-        Text.byteLength(this.options.sql, this.options.charset) + 1 +
+        Text.sqlByteLength(this.options.sql, this.options.charset) + 1 +
         // The length of the next part.
         DATA_TYPES.INT_SIZEOF +
         // The type of CCI prepare.

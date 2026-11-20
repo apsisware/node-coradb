@@ -1,6 +1,6 @@
 {
   "name": "@coradb/node-coradb",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "This is a Node.js driver for CoraDB database engine. It is developed in 100% JavaScript and does not require specific platform compilation.",
   "author": "CoraDB Team <contact@coradb.ai> (http://www.coradb.ai/)",
   "repository": {

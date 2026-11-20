@@ -91,17 +91,19 @@ two or three items at most.
 | zero date `0000-00-00` | a wrong date (`-000001-11-30`) | `null` |
 | SET / MULTISET / LIST columns | not read correctly | arrays |
 | strings | always decoded as UTF-8 | decoded in the column's charset |
-| text sent (SQL, string parameters) | always UTF-8 | UTF-8, or ISO-8859-1 with `charset: 'iso-8859-1'` |
+| text sent (SQL, string parameters) | always UTF-8 | the database's own charset (UTF-8 or ISO-8859-1) |
 | column `IsNullable` (metadata) | the wrong way round: NOT NULL columns came back nullable | `false` for NOT NULL and primary-key columns |
 | `Timezone.valueOf()` | the wall-clock time read as UTC | the instant |
 
 Code that does arithmetic on BIGINT or NUMERIC columns, or that sends values
 to a UI as JSON, should expect a string for values outside the safe range.
 
-On a database created with ISO-8859-1, add `charset: 'iso-8859-1'` to the
-connection options. node-cubrid always sent UTF-8, so `'é'` was stored as two
-characters (`'Ã©'`); with the option, text goes out as the database expects
-it, and a character it cannot hold (`'€'`) is refused instead of mangled.
+Text now goes out in the database's own charset: from 1.1.0 the driver reads
+it after the login, so nothing needs setting. node-cubrid always sent UTF-8,
+so on an ISO-8859-1 database `'é'` was stored as two characters (`'Ã©'`). A
+character the database cannot hold (`'€'` in ISO-8859-1) is refused instead of
+mangled. The `charset` option (`'utf-8'`, `'iso-8859-1'`) fixes the charset
+and skips the extra query.
 Dates and times are still read and written in UTC, as before.
 
 **Errors**
@@ -211,7 +213,7 @@ a good shape for a migration: only that module and a type file change.
 
    ```diff
    -    "node-cubrid": "^11.0.0",
-   +    "@coradb/node-coradb": "^1.0.1",
+   +    "@coradb/node-coradb": "^1.1.0",
    ```
 
    then `npm install`.
@@ -368,7 +370,8 @@ a good shape for a migration: only that module and a type file change.
       where values are used or displayed.
 - [ ] Transactions: `setAutoCommitMode()` now commits on a mode change;
       `TRANSACTION_LOST` handled where auto-commit is off.
-- [ ] A database created with ISO-8859-1: `charset: 'iso-8859-1'` in the
-      connection options (UTF-8 text would be stored byte for byte).
+- [ ] A database created with ISO-8859-1: nothing to set from 1.1.0 (the
+      driver reads the charset); code that relied on accented text being
+      stored as UTF-8 bytes there will see it stored correctly instead.
 - [ ] Docs and comments updated.
 - [ ] Unit tests pass; database features checked against a real server.

@@ -28,7 +28,7 @@ PrepareExecutePacket.prototype.writePrepare = function (writer) {
   writer._writeInt(this.getPrepareBufferLength() - DATA_TYPES.DATA_LENGTH_SIZEOF - DATA_TYPES.CAS_INFO_SIZE);
   writer._writeBytes(options.casInfo);
   writer._writeByte(CAS.CASFunctionCode.CAS_FC_PREPARE);
-  writer._writeNullTerminatedString(options.sql, options.charset);
+  writer._writeNullTerminatedString(options.sql, options.charset, true);
   // HOLDABLE: a result that stays open across a commit (see ExecuteQueryPacket);
   // `prepareFlag` adds XASL_CACHE_PINNED when preparing again after
   // CAS_ER_STMT_POOLING.
@@ -424,7 +424,7 @@ PrepareExecutePacket.prototype.getPrepareBufferLength = function () {
         DATA_TYPES.CAS_INFO_SIZE +
         DATA_TYPES.BYTE_SIZEOF +
         DATA_TYPES.INT_SIZEOF +
-        Text.byteLength(this.options.sql, this.options.charset) + 1 +
+        Text.sqlByteLength(this.options.sql, this.options.charset) + 1 +
         DATA_TYPES.INT_SIZEOF +
         DATA_TYPES.BYTE_SIZEOF +
         DATA_TYPES.INT_SIZEOF +

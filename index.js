@@ -22,7 +22,7 @@ exports.Helpers = Helpers;
  *   createConnection({ host: 'localhost:33000', user: 'dba', password: '',
  *                      database: 'demodb', connectionTimeout: 5000,
  *                      requestTimeoutMs: 30000, queryTimeout: 60000,
- *                      charset: 'utf-8' })
+ *                      charset: 'auto' })
  *
  * @alias createClient, createConnection
  * @param hosts
@@ -35,7 +35,7 @@ exports.Helpers = Helpers;
  * @param logger
  * @param requestTimeoutMs default timeout of sql(), stream(), cursor(), prepare()
  * @param queryTimeout server-side statement timeout, in milliseconds (0: none)
- * @param charset 'utf-8' (default) or 'iso-8859-1': the charset text goes out and is read in
+ * @param charset 'auto' (default: the database's own), 'utf-8' or 'iso-8859-1': the charset text goes out and is read in
  * @return {CoraDBConnection}
  */
 exports.createConnection = exports.createCoraDBConnection = function (hosts, port, user, password, database, connectionTimeout, maxConnectionRetryCount, logger, requestTimeoutMs, queryTimeout, charset) {

@@ -1277,7 +1277,7 @@ describe('test_CoraDBConnection.fixes', function () {
     const LATIN1_E = Buffer.from('é', 'latin1');
     const UTF8_E = Buffer.from('é', 'utf8');
 
-    it('is UTF-8 by default, and takes the ISO-8859-1 names', function () {
+    it('is UTF-8 until the database says otherwise, and takes the ISO-8859-1 names', function () {
       assert.strictEqual(CoraDB.createConnection({ database: 'x' }).charset, 'utf8');
 
       for (const name of ['iso-8859-1', 'ISO-8859-1', 'iso_8859_1', 'latin1', 'iso88591']) {
@@ -1330,6 +1330,147 @@ describe('test_CoraDBConnection.fixes', function () {
       // The connection goes on.
       assert.strictEqual((await conn.sql('select a from t')).rows.length, 2);
       assert.ok(LATIN1_E.length === 1);
+    });
+  });
+  describe("charset: 'auto' (the default: the database's own charset)", function () {
+    it('reads ISO-8859-1 from an ISO-8859-1 database, once, and sends text in it', async function () {
+      cas = await fakeCas({ onQuery: answer, dbCharset: 3 });
+      open();
+
+      assert.strictEqual(conn.charset, 'utf8');
+      await conn.connect();
+      assert.strictEqual(conn.charset, 'latin1');
+
+      // Its handle closed: nothing left in the handle table.
+      assert.deepStrictEqual(Object.keys(conn._queryResultSets), []);
+
+      await conn.sql("update t set a = 'caf\u00e9'");
+      assert.ok(cas.log.some((e) => e.raw && e.raw.includes(Buffer.from("'caf\u00e9'", 'latin1'))));
+
+      // Not asked again after a reconnect: the database is the same.
+      await conn.close();
+      await conn.connect();
+      assert.strictEqual(cas.charsetAsked(), 1);
+      assert.strictEqual(conn.charset, 'latin1');
+    });
+
+    it('keeps UTF-8 for a UTF-8 database; takes the option written out too', async function () {
+      cas = await fakeCas({ onQuery: answer });
+      open({ charset: 'AUTO' });
+      await conn.connect();
+
+      assert.strictEqual(conn.charset, 'utf8');
+      assert.strictEqual(cas.charsetAsked(), 1);
+    });
+
+    it('keeps UTF-8 and warns when the server refuses the query; the connect succeeds', async function () {
+      const warnings = [];
+
+      cas = await fakeCas({ onQuery: answer, dbCharset: { code: -493, message: 'no db_root' } });
+      open({ logger: { warn: (m) => warnings.push(m) } });
+      await conn.connect();
+
+      assert.strictEqual(conn.charset, 'utf8');
+      assert.strictEqual(warnings.length, 1);
+      assert.match(warnings[0], /no db_root/);
+      assert.strictEqual((await conn.sql('select a from t')).rows.length, 2);
+    });
+
+    it('sends a literal that names its charset in that charset (_utf8, _iso88591)', async function () {
+      cas = await fakeCas({ onQuery: answer, dbCharset: 3 });
+      open();
+
+      // An ISO-8859-1 database with a UTF-8 column: the literal's bytes are
+      // UTF-8, the rest of the statement ISO-8859-1.
+      await conn.sql("insert into t values (_utf8'이é', 'é')");
+
+      const raw = cas.log.find((e) => e.raw).raw;
+
+      assert.ok(raw.includes(Buffer.from("_utf8'이é'", 'utf8')));
+      assert.ok(raw.includes(Buffer.from(", 'é')", 'latin1')));
+      // Outside such a literal, a character ISO-8859-1 cannot hold is refused.
+      await assert.rejects(conn.sql("insert into t values ('이')"), { code: 'INVALID_PARAMETER' });
+    });
+
+    it('writes and reads CLOB text as UTF-8 when the charset was read, in the charset when it was set', async function () {
+      const written = [];
+      const handlers = {
+        [FC.CAS_FC_LOB_WRITE]: (body) => {
+          const at = 4 + body.readInt32BE(0) + 4 + 8;
+          const length = body.readInt32BE(at);
+
+          written.push(Buffer.from(body.subarray(at + 4, at + 4 + length)));
+          return new Out().int(length).reply();
+        },
+      };
+      const clob = () => {
+        const handle = Buffer.alloc(18);
+
+        handle.writeInt32BE(CAS.CCILOBType.CCI_LOB_TYPE_CLOB, 0);
+        handle.writeInt32BE(2, 12);
+        return { packedLobHandle: handle, lobLength: 0, lobType: T.CCI_U_TYPE_CLOB, fileLocator: 'x' };
+      };
+
+      cas = await fakeCas({ onQuery: answer, dbCharset: 3, handlers });
+      open();
+      await conn.connect();
+      assert.strictEqual(conn.charset, 'latin1');
+
+      // As every earlier version wrote it: text ISO-8859-1 cannot hold too.
+      await conn.lobWrite(clob(), 0, 'café 이');
+      assert.deepStrictEqual(written.pop(), Buffer.from('café 이', 'utf8'));
+      conn.abort();
+
+      open({ charset: 'iso-8859-1' });
+      await conn.lobWrite(clob(), 0, 'café');
+      assert.deepStrictEqual(written.pop(), Buffer.from('café', 'latin1'));
+    });
+
+    it('does not ask with an explicit charset', async function () {
+      cas = await fakeCas({ onQuery: answer, dbCharset: 3 });
+      open({ charset: 'utf-8' });
+      await conn.connect();
+      assert.strictEqual(conn.charset, 'utf8');
+      conn.abort();
+
+      open({ charset: 'iso-8859-1' });
+      await conn.connect();
+      assert.strictEqual(conn.charset, 'latin1');
+
+      assert.strictEqual(cas.charsetAsked(), 0);
+    });
+  });
+  describe('SQL text in the charsets it names (charset.js encodeSql)', function () {
+    const Text = require('../../src/charset');
+    const hex = (s, c) => Text.encodeSql(s, c).toString('hex');
+    const bytes = (...parts) => Buffer.concat(parts.map(([t, c]) => Buffer.from(t, c))).toString('hex');
+
+    it('sends the whole statement in the connection charset when no literal names another', function () {
+      assert.strictEqual(hex("select 'café'", 'latin1'), bytes(["select 'café'", 'latin1']));
+      assert.strictEqual(hex("select 'café'", 'utf8'), bytes(["select 'café'", 'utf8']));
+    });
+
+    it('sends _utf8 and _iso88591 literals in their own charset, either way round', function () {
+      assert.strictEqual(hex("select _UTF8'é', 'é'", 'latin1'),
+        bytes(['select ', 'latin1'], ["_UTF8'é'", 'utf8'], [", 'é'", 'latin1']));
+      assert.strictEqual(hex("select _iso88591'é', 'é'", 'utf8'),
+        bytes(['select ', 'utf8'], ["_iso88591'é'", 'latin1'], [", 'é'", 'utf8']));
+    });
+
+    it('does not take a name inside a literal or a quoted name for a charset', function () {
+      assert.strictEqual(hex("select 'it''s _utf8''é''', \"_utf8'x\"", 'latin1'),
+        bytes(["select 'it''s _utf8''é''', \"_utf8'x\"", 'latin1']));
+    });
+
+    it('sends a comment ISO-8859-1 cannot hold as UTF-8; refuses such text anywhere else, naming where', function () {
+      assert.strictEqual(hex("select 1 -- 한\nfrom t /* 국 */", 'latin1'),
+        bytes(['select 1 ', 'latin1'], ['-- 한', 'utf8'], ['\nfrom t ', 'latin1'], ['/* 국 */', 'utf8']));
+      assert.throws(() => Text.encodeSql("select _utf8'x', '이'", 'latin1'), /U\+C774, at 18\)/);
+    });
+
+    it('lets Node refuse what is not text, as before', function () {
+      assert.throws(() => Text.sqlByteLength(1234, 'latin1'), /The "string" argument must be of type string/);
+      assert.throws(() => Text.byteLength(1234, 'latin1'), /The "string" argument must be of type string/);
     });
   });
 });

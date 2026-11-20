@@ -45,6 +45,13 @@ const CAS = require('../../../src/constants/CASConstants');
  *
  * CHECK_CAS is answered as the real CAS answers it: a reply with no body.
  *
+ * The query the driver sends after the login to read the database's charset
+ * (`SELECT charset FROM db_root`, charset 'auto', the default) and the close
+ * of its handle are answered here, before `handlers` and `onQuery`, and are
+ * not in `cas.log` (`cas.charsetAsked()` counts them). `dbCharset` is what it
+ * answers: 5 (UTF-8, the default), 3 (ISO-8859-1), or `{ code, message }` for
+ * an error reply.
+ *
  * Like a CAS, the first byte of each reply's CAS info says whether a
  * transaction is open: set by a statement run without auto-commit, or with it
  * while its result is open (a SELECT, several results); cleared by END_TRAN,
@@ -65,6 +72,10 @@ const TYPES = {
 const typeCode = (type) => (typeof type === 'number' ? type : TYPES[type]);
 
 const FC = CAS.CASFunctionCode;
+
+// The driver's charset query (charset 'auto'), and the handle it is answered with.
+const CHARSET_SQL = 'SELECT charset FROM db_root';
+const CHARSET_HANDLE = 9999;
 
 class Out {
   constructor() {
@@ -208,7 +219,8 @@ function readString(buf, at) {
 }
 
 async function fakeCas(options) {
-  const opts = Object.assign({ fetchSize: 2, pid: 4242, handlers: {}, brokerFlags: 0xc0, statementPooling: 0, brokerVersion: 0x4a, loginActive: true }, options);
+  const opts = Object.assign({ fetchSize: 2, pid: 4242, handlers: {}, brokerFlags: 0xc0, statementPooling: 0, brokerVersion: 0x4a, loginActive: true, dbCharset: 5 }, options);
+  let charsetAsked = 0;
   const log = [];
   const sockets = new Set();
   let sharedNextHandle = 1;
@@ -291,7 +303,48 @@ async function fakeCas(options) {
       return out.reply();
     };
 
+    // The driver's charset query, and the close of its handle (see above).
+    const charsetReply = (frame) => {
+      const fc = frame[8];
+      const body = frame.subarray(9);
+
+      if ((fc === FC.CAS_FC_PREPARE_AND_EXECUTE || fc === FC.CAS_FC_PREPARE_AND_EXECUTE_FOR_PROTO_V2) &&
+          readString(body, 8).value === CHARSET_SQL) {
+        charsetAsked += 1;
+
+        if (opts.dbCharset && typeof opts.dbCharset === 'object') {
+          return errorReply(opts.dbCharset);
+        }
+
+        const columns = [['charset', 'int']];
+        const out = new Out().int(CHARSET_HANDLE).int(0)
+          .byte(CAS.CoraDBStatementType.CORADB_STMT_SELECT).int(0).byte(0).int(1);
+        columns.forEach((c) => columnInfo(out, c));
+        out.int(1).byte(0).int(1)
+          .byte(CAS.CoraDBStatementType.CORADB_STMT_SELECT).int(1).bytes(8).int(0).int(0)
+          .byte(0).int(0)
+          .int(0).int(1);
+        rowsOut(out, [[opts.dbCharset]], columns, 1);
+        // A SELECT run with auto-commit: open until its handle is closed.
+        active = true;
+        return out.reply();
+      }
+
+      if (fc === FC.CAS_FC_CLOSE_REQ_HANDLE && body.readInt32BE(4) === CHARSET_HANDLE) {
+        if (body[12] === 1) active = false;
+        return new Out().int(0).reply();
+      }
+
+      return undefined;
+    };
+
     const handle = async (frame) => {
+      const internal = charsetReply(frame);
+
+      if (internal) {
+        return internal;
+      }
+
       const reply = await handleRequest(frame);
       const entry = log[log.length - 1] || {};
       const fc = frame[8];
@@ -530,6 +583,8 @@ async function fakeCas(options) {
     connectionLog,
     /** How many logins the server has answered. */
     logins: () => logins,
+    /** How many times the driver asked for the database's charset. */
+    charsetAsked: () => charsetAsked,
     /** Close every client socket from the server's side (FIN). */
     dropAll: () => {
       for (const s of sockets) s.end();

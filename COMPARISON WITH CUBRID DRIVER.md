@@ -5,7 +5,7 @@
 | | |
 | --- | --- |
 | **A new, promise-first API** | `sql()`, `stream()`, `cursor()`, `prepare()`, `executeMulti()` and `transaction()`, with per-request timeouts and `AbortSignal`. The original methods are all kept. |
-| **Correct values** | BIGINT and NUMERIC are never rounded (text when a number would change them), SMALLINT is signed, collections and JSON are read and bound, strings are decoded in their column's charset, and time-zone values give the right instant, including the hour repeated when DST ends; column nullability is reported the right way round, and text can go out in ISO-8859-1 (`charset`). |
+| **Correct values** | BIGINT and NUMERIC are never rounded (text when a number would change them), SMALLINT is signed, collections and JSON are read and bound, strings are decoded in their column's charset, and time-zone values give the right instant, including the hour repeated when DST ends; column nullability is reported the right way round, and text goes out in the database's own charset. |
 | **Safe transactions** | Changing auto-commit commits the pending work, as JDBC does; a session lost with a transaction open fails with `TRANSACTION_LOST` instead of silently reconnecting; COMMIT and ROLLBACK are sent only when a transaction is open; results stay open across a commit. |
 | **Resilient connections** | A lost socket answers every waiting request; a statement interrupted by a lost connection is retried once on a new one when nothing was pending; dropped prepared statements are prepared again; `cancel()` stops a statement through the broker and keeps the connection. |
 | **Real errors** | Every failure is a `CoraDBError` (`code`, `casCode`, `statement`, `retryable`); failed batches are a `CoraDBBatchError`. CAS errors use the current numbering (`-10007`, not `-1007`). |
@@ -56,8 +56,8 @@ the sections below):
   **strings**; a zero date comes back as **null**; SMALLINT is signed.
 - After a lost connection with auto-commit off and a transaction open,
   requests fail with `TRANSACTION_LOST` instead of silently reconnecting.
-- Text goes out in UTF-8 unless the `charset` option says `'iso-8859-1'`;
-  set it for a database created with ISO-8859-1.
+- Text goes out in the database's own charset (read after the login), not
+  always in UTF-8; the `charset` option can fix it instead.
 - The text formatter escapes strings by doubling the quote only (no backslash
   escapes), and refuses values it cannot write safely.
 
@@ -71,7 +71,7 @@ the sections below):
 | Type definitions | none | `index.d.ts` |
 | Published files | everything | `index.js`, `index.d.ts`, `src/`, `CHANGELOG.md`, `COMPARISON WITH CUBRID DRIVER.md`, `MIGRATION.md` (`files` in package.json) |
 | Protocol version sent | V7 | V9 |
-| Package | `node-cubrid` 11.0.0 | `@coradb/node-coradb` 1.0.1 (public, scoped under the CoraDB npm organization) |
+| Package | `node-cubrid` 11.0.0 | `@coradb/node-coradb` 1.1.0 (public, scoped under the CoraDB npm organization) |
 
 Source changes that apply throughout: `node:` prefixes on built-in modules,
 `Buffer.alloc` / `Buffer.from` instead of `new Buffer`, `subarray` instead of
@@ -116,8 +116,8 @@ removed from the original methods.
 - `getDatabaseParameter()` / `setDatabaseParameter()` take names
   (`'ISOLATION_LEVEL'`, `'isolationLevel'`) as well as numbers; AUTO_COMMIT is
   the connection's own mode (`setAutoCommitMode()`).
-- The `charset` connection option (JDBC's `charSet`): `'utf-8'` or
-  `'iso-8859-1'`.
+- The `charset` connection option (JDBC's `charSet`): `'auto'` (the
+  default: the database's own charset), `'utf-8'` or `'iso-8859-1'`.
 
 **Exports** (`require('@coradb/node-coradb')`)
 
@@ -255,7 +255,7 @@ the function codes up to `CAS_CHANGE_MODE`; `ColumnTypeMask`,
 | empty BIT VARYING | null | an empty Buffer |
 | column `IsNullable` | the wrong way round (NOT NULL columns nullable) | as the server sends it (`false` for NOT NULL and primary keys) |
 | strings | UTF-8 | in their column's charset (UTF-8, ISO-8859-1, binary as Latin-1) |
-| text sent (SQL, string parameters) | UTF-8 | the `charset` option: UTF-8 (default) or ISO-8859-1; a character it cannot hold is refused |
+| text sent (SQL, string parameters) | UTF-8 | the database's own charset (read after the login), or the `charset` option; a character it cannot hold is refused |
 | `Timezone.valueOf()` | the wall-clock time read as UTC | the instant (through luxon) |
 | the hour repeated when DST ends | — | the server's abbreviation (EDT / EST) picks which of the two instants |
 | zone-less date strings bound as DATE/DATETIME | parsed in local time, sent in UTC | sent as written |

@@ -38,7 +38,7 @@ BatchExecuteNoQueryPacket.prototype.write = function (writer) {
 
   // Write every sql statement in the batch.
   for (let i = 0, sqls = options.sqls, len = sqls.length; i < len; ++i) {
-    writer._writeNullTerminatedString(sqls[i], options.charset);
+    writer._writeNullTerminatedString(sqls[i], options.charset, true);
   }
 
   return writer;
@@ -124,7 +124,7 @@ BatchExecuteNoQueryPacket.prototype.getBufferLength = function () {
         len;
 
   for (let i = 0; i < len; ++i) {
-    bufferLength += Text.byteLength(sqls[i], options.charset);
+    bufferLength += Text.sqlByteLength(sqls[i], options.charset);
   }
 
   return bufferLength;

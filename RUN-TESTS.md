@@ -41,11 +41,11 @@ retries, the run can appear to hang before failing.
 
 | Suite | Tests |
 | --- | --- |
-| Unit (no server) | 347 |
+| Unit (no server) | 359 |
 | Unit tests that need the server (time zones) | 4 |
-| Database tests | 286 |
+| Database tests | 287 |
 | End-to-end tests | 15 |
-| **Total** (`npm test`) | **652** |
+| **Total** (`npm test`) | **665** |
 
 ## Run everything
 

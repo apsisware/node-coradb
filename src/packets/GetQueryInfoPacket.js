@@ -47,7 +47,7 @@ GetQueryInfoPacket.prototype.write = function (writer) {
   // Three arguments, each its own length and value.
   writer.addInt(this.queryHandle);
   writer.addByte(GetQueryInfoPacket.QUERY_INFO_PLAN);
-  writer._writeNullTerminatedString(this.sql, this.charset);
+  writer._writeNullTerminatedString(this.sql, this.charset, true);
 
   return writer;
 };
@@ -81,7 +81,7 @@ GetQueryInfoPacket.prototype.getBufferLength = function () {
     // What kind of information: its length, then the byte.
     DATA_TYPES.INT_SIZEOF + DATA_TYPES.BYTE_SIZEOF +
     // The statement: its length, the bytes, and the terminating null.
-    DATA_TYPES.INT_SIZEOF + Text.byteLength(this.sql, this.charset) + DATA_TYPES.BYTE_SIZEOF
+    DATA_TYPES.INT_SIZEOF + Text.sqlByteLength(this.sql, this.charset) + DATA_TYPES.BYTE_SIZEOF
   );
 };
 

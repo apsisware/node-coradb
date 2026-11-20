@@ -387,12 +387,13 @@ PacketWriter.prototype._writeFiller = function (bytesCount, fillerValue) {
  * Write a null-terminate string to the internal buffer
  * @param value
  * @param charset the connection's charset ('utf8' by default; see charset.js)
+ * @param isSql SQL text: a literal that names its charset goes in that one (Text.encodeSql)
  */
-PacketWriter.prototype._writeNullTerminatedString = function (value, charset) {
+PacketWriter.prototype._writeNullTerminatedString = function (value, charset, isSql) {
   // Typecast undefined into '' and numbers into strings.
   value = value ? '' + value : '';
 
-  const bytes = Text.encode(value, charset);
+  const bytes = isSql ? Text.encodeSql(value, charset) : Text.encode(value, charset);
   const stringLengthInBytes = bytes.length;
   this._allocate(
     // the length of the string

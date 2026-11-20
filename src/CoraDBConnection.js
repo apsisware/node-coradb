@@ -296,7 +296,7 @@ function parseHost(hostPort, defaultPort) {
  * @param logger
  * @param requestTimeoutMs default client-side timeout of sql(), stream(), cursor() and prepare()
  * @param queryTimeout server-side query timeout, in milliseconds (see setQueryTimeout())
- * @param charset what text goes out and is read in: 'utf-8' (default) or 'iso-8859-1' (see charset.js)
+ * @param charset what text goes out and is read in: 'auto' (default: the database's own), 'utf-8' or 'iso-8859-1' (see charset.js)
  * @constructor
  */
 function CoraDBConnection(hosts, port, user, password, database, connectionTimeout, maxConnectionRetryCount, logger, requestTimeoutMs, queryTimeout, charset) {
@@ -351,7 +351,11 @@ function CoraDBConnection(hosts, port, user, password, database, connectionTimeo
   // limit. Sent with every execute (see setQueryTimeout()).
   this.queryTimeout = timeoutMs(queryTimeout);
   // As the JDBC driver's charSet: 'utf8' or 'latin1'. Throws for another.
-  this.charset = Text.charsetOf(charset);
+  // 'auto' (the default): UTF-8 until the first login has read the
+  // database's charset (see _readDatabaseCharset).
+  this._charsetOption = Text.charsetOf(charset);
+  this.charset = this._charsetOption === 'auto' ? 'utf8' : this._charsetOption;
+  this._charsetRead = false;
 
   // Session public variables
   this.autoCommitMode = true;
@@ -992,6 +996,7 @@ function _startConnect() {
 
     _doGetBrokerPort.call(this)
       .then(() => (stillWanted() ? _doDatabaseLogin.call(this) : Promise.reject(interrupted())))
+      .then(() => (stillWanted() ? _readDatabaseCharset.call(this) : Promise.reject(interrupted())))
       .then(() => {
         if (!stillWanted()) {
           throw interrupted();
@@ -1024,6 +1029,77 @@ function _startConnect() {
   promise.then(forget, forget);
 
   return promise;
+}
+
+/**
+ * charset: 'auto' (the default) — after the first login, ask the database its
+ * charset (db_root.charset) and use it from then on: a statement and the close
+ * of its handle, sent as part of the connect, before any queued request. The
+ * database a connection opens does not change, so it is read once. If the
+ * server refuses the statement, the connection keeps UTF-8 (what the driver
+ * always sent before) and a warning is logged; a lost socket fails the
+ * connect, as it would have anyway.
+ * @private
+ */
+function _readDatabaseCharset() {
+  if (this._charsetOption !== 'auto' || this._charsetRead) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    const sql = Text.DATABASE_CHARSET_SQL;
+    const packet = new ExecuteQueryPacket({
+      charset: 'utf8',
+      // Committed when its handle is closed: it leaves no transaction open.
+      autoCommit: true,
+      holdable: false,
+      casInfo: this._CASInfo,
+      logger: this.logger,
+      protocolVersion: this.brokerInfo.protocolVersion,
+      queryTimeout: 0,
+      sql,
+    });
+    const packetWriter = new PacketWriter(packet.getBufferLength());
+
+    packet.write(packetWriter);
+
+    _send.call(this, packetWriter._buffer, {
+      sql,
+      connecting: true,
+      parserFunction: _parseBufferForNewProtocol.bind(this),
+      dataPacket: packet
+    }, (err, result, queryHandle) => {
+      if (err) {
+        if (isCommunicationError(err) || !this._socket || this._socket.destroyed) {
+          return reject(err);
+        }
+
+        this._charsetRead = true;
+        this.logger.warn(`The database's charset could not be read (${err.message}); text is sent as UTF-8. Set the charset option to choose it.`);
+
+        return resolve();
+      }
+
+      const row = result && result.ColumnValues && result.ColumnValues[0];
+
+      this.charset = Text.charsetOfDatabase(row ? row[0] : undefined);
+      this._charsetRead = true;
+      this.logger.debug(`_readDatabaseCharset: ${row ? row[0] : '?'} -> ${this.charset}`);
+
+      delete this._queryResultSets[queryHandle];
+
+      const closePacket = new CloseQueryPacket({ autoCommit: true, casInfo: this._CASInfo, reqHandle: Number(queryHandle) });
+      const closeWriter = new PacketWriter(closePacket.getBufferLength());
+
+      closePacket.write(closeWriter);
+
+      _send.call(this, closeWriter._buffer, {
+        connecting: true,
+        parserFunction: _parseResponseCodeBuffer.bind(this),
+        dataPacket: closePacket
+      }, (closeErr) => (closeErr ? reject(closeErr) : resolve()));
+    });
+  });
 }
 
 /**
@@ -3757,6 +3833,18 @@ function setLobHandleSize(lobObject, size) {
   }
 }
 
+/**
+ * The charset of CLOB text. A CLOB is bytes to the server, which converts it
+ * only when asked (CLOB_TO_CHAR); the driver always wrote and read it as
+ * UTF-8. A charset the application chose is used (as JDBC's CORADBClob does);
+ * one read from the database ('auto') is not, or CLOBs written before would
+ * read back wrong and text ISO-8859-1 cannot hold could not be written.
+ * @private
+ */
+function _clobCharset() {
+  return this._charsetOption === 'auto' ? 'utf8' : this.charset;
+}
+
 function _lobWrite(lobObject, offset, data) {
   this.logger.debug(`Executing _lobWrite: offset = ${offset}, lobObject =`, lobObject);
 
@@ -3773,7 +3861,7 @@ function _lobWrite(lobObject, offset, data) {
     if (typeof data === 'string') {
       // CLOB text, in the connection's charset (as JDBC's CORADBClob).
       try {
-        data = Text.encode(data, this.charset);
+        data = Text.encode(data, _clobCharset.call(this));
       } catch (err) {
         return reject(err);
       }
@@ -3882,7 +3970,7 @@ function _lobRead(lobObject, offset, length) {
       let data = Buffer.concat(buffers, totalReadLen);
 
       if (lobObject.lobType === CASConstants.CoraDBDataType.CCI_U_TYPE_CLOB) {
-        data = data.toString(this.charset);
+        data = data.toString(_clobCharset.call(this));
       }
 
       resolve({

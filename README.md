@@ -42,7 +42,7 @@ parametrize SQL statements, etc.
 - Support for [LOB](https://www.coradb.ai/manual/en/10.1/sql/datatype.html#blob-clob-data-types) (Binary and Character) objects.
 - Support for [ENUM](https://www.coradb.ai/manual/en/10.1/sql/datatype.html#enum-data-type) data types.
 - SET, MULTISET and SEQUENCE (LIST) values, read as arrays and bound as parameters.
-- Strings decoded in their column's charset (UTF-8, ISO-8859-1, binary); text sent in UTF-8 or ISO-8859-1 (the `charset` option).
+- Strings decoded in their column's charset (UTF-8, ISO-8859-1, binary); text sent in the database's own charset, read after the login (the `charset` option).
 - Generated keys, a connection check (`isValid()`), a server-side query timeout, query plans and cancelling a running statement.
 - Several results from one request (`executeMulti()`), read as the JDBC driver reads them.
 - The JDBC driver's protocol behaviour: holdable results, statement-pooling and reconnect retries, session ids, current error codes (see [As the JDBC driver does it](#as-the-jdbc-driver-does-it)).
@@ -386,16 +386,15 @@ The driver follows the CoraDB JDBC driver in what it sends and how it reacts:
   or a server-side disconnect (errors -111, -199, -224, -677), when it was the
   first statement of its transaction — nothing done before it is lost. Not
   after you `close()` or `abort()` the connection, and not after a reply the
-  driver could not read (the server may have run the statement). The server
-  answers a login with a transaction open, so after an explicit `connect()`
-  the first statement is not run again either, as with JDBC.
+  driver could not read (the server may have run the statement).
 - **A lost transaction is reported.** When the session goes while auto-commit
   is off and the server had reported a transaction open, the next requests
   fail with `TRANSACTION_LOST` until `rollback()`, `setAutoCommitMode()`,
   `connect()` or `close()`. With nothing pending, the driver reconnects
   silently, as JDBC does.
 - **Text goes out in the connection's charset** (the `charset` option, JDBC's
-  `charSet`), UTF-8 by default.
+  `charSet`). Unlike JDBC, whose default is the platform's charset, the
+  default is the database's own (see "Setting the charset").
 - **A reconnect asks for the same session**: the driver sends back the session
   id the server gave it at the last login, as the JDBC driver does, so a server
   that still holds the session (its `@variables`, `LAST_INSERT_ID()`) can resume
@@ -453,9 +452,9 @@ If there is a vital need to run queries in parallel, developers can use connecti
      *  11. `queryTimeout`: how long the server lets a statement run, in
      *     milliseconds (see "The server's query timeout"). Defaults to `0`
      *     (none). Since 0.9.9.
-     *  12. `charset`: `'utf-8'` or `'iso-8859-1'` (also `'latin1'`), the
-     *     charset text goes out and is read in (see "Setting the charset").
-     *     Defaults to `'utf-8'`.
+     *  12. `charset`: `'auto'`, `'utf-8'` or `'iso-8859-1'` (also
+     *     `'latin1'`), the charset text goes out and is read in (see
+     *     "Setting the charset"). Defaults to `'auto'`: the database's own.
      */
 
     // All arguments are optional in which case default values will be set.
@@ -480,7 +479,7 @@ The following example shows how to create a client by providing an object of con
         logger: logger,
         requestTimeoutMs: 30000,
         queryTimeout: 60000,
-        charset: 'utf-8'
+        charset: 'auto'
     });
 
 ### Establishing a connection
@@ -625,19 +624,39 @@ After 2 seconds, the script will timeout with an error like:
 
 #### Setting the charset
 
+    // Nothing to set: the database's own charset is read after the login.
+    const client = CoraDB.createConnection({ ... });
+
+    // Or fixed, which skips that query.
     const client = CoraDB.createConnection({ ..., charset: 'iso-8859-1' });
 
 The `charset` option is the JDBC driver's `charSet`: the charset SQL text,
 string parameters, schema patterns and CLOB text are sent in, and column names,
-default values and query plans are read in. It is `'utf-8'` by default; the
-other is `'iso-8859-1'` (also `'latin1'`). Column values are always read in
+default values and query plans are read in. Column values are always read in
 their column's own charset, which the server sends with each column.
 
-Set it to the charset the database was created with. Sent to an ISO-8859-1
-database as UTF-8, `'café'` is stored as `'cafÃ©'`. A character the charset
-cannot hold (`'€'` in ISO-8859-1) is refused with `INVALID_PARAMETER` before
-anything is sent. `client.charset` says which one the connection uses
-(`'utf8'` or `'latin1'`).
+By default (`'auto'`) the driver asks the database for its charset right after
+the first login (`SELECT charset FROM db_root`, one extra round trip per
+connection) and uses it: ISO-8859-1 for an ISO-8859-1 database, UTF-8 for any
+other. Sent to an ISO-8859-1 database as UTF-8, `'café'` would be stored as
+`'cafÃ©'`, so an application does not need to know each database's charset.
+If the server refuses that query, the connection keeps UTF-8 and logs a
+warning; the connect still succeeds. `'utf-8'` or `'iso-8859-1'` (also
+`'latin1'`) fixes the charset and skips the query. (The JDBC driver uses the
+platform's charset instead.)
+
+A string literal that names its charset is sent in that charset, as the
+server reads it: `_utf8'이'` as UTF-8 even on an ISO-8859-1 database (for a
+column declared `CHARSET utf8`), `_iso88591'é'` as ISO-8859-1. CLOB text is
+written and read as UTF-8 when the charset was read from the database (a CLOB
+is bytes to the server, and earlier versions always used UTF-8), and in the
+charset you set otherwise.
+
+A character the charset cannot hold (`'€'` in ISO-8859-1) is refused with
+`INVALID_PARAMETER` before anything is sent, except inside such a literal or
+a comment. `client.charset` says which one
+the connection uses (`'utf8'` or `'latin1'`; `'utf8'` until the first connect
+has read it).
 
 #### Setting CoraDB Server Parameters
 

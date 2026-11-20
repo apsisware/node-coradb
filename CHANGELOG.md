@@ -1,5 +1,16 @@
 # node-coradb change log
 
+## Version 1.1.0 (Nov 20, 2026)
+
+The driver now sends text in the database's own charset without being told: applications, including ones written before this release, no longer store accented text wrongly on an ISO-8859-1 database.
+
+- New: the `charset` option takes `'auto'`, and `'auto'` is the default: right after the first login the driver reads the database's charset (`SELECT charset FROM db_root`) and uses it — ISO-8859-1 for an ISO-8859-1 database, UTF-8 for any other. It is read once per connection, and its handle is closed with auto-commit. If the server refuses the query, the connection keeps UTF-8 and logs a warning; the connect still succeeds. `'utf-8'` or `'iso-8859-1'` fixes the charset and skips the query.
+- Change: by default every connection sends one more statement when it first connects. Text was always sent as UTF-8, so on an ISO-8859-1 database `'café'` was stored as `'cafÃ©'` and `WHERE name = 'José'` found nothing. The JDBC driver uses the platform's charset instead; there is no JDBC equivalent.
+- New: a string literal that names its charset is sent in it, whatever the connection's: `_utf8'...'` as UTF-8, `_iso88591'...'` as ISO-8859-1 (the server reads them so). On an ISO-8859-1 database, `INSERT ... VALUES (_utf8'이')` into a UTF-8 column works; a comment the charset cannot hold is sent as UTF-8. Elsewhere, a character the connection's charset cannot hold is still refused.
+- Change: CLOB text is written and read as UTF-8 when the charset was read from the database (`'auto'`), as every earlier version did: the server keeps a CLOB as bytes, so CLOBs written before still read back, and text ISO-8859-1 cannot hold can still be stored. With `charset` set, CLOB text is in that charset (as JDBC).
+- Change: after the default charset query the connection starts with no transaction open (its close commits), where the login's reply reported one open. A first `setAutoCommitMode()` change then sends no COMMIT, and the first statement after an explicit `connect()` is run again after a lost connection, as any first statement of a transaction.
+- Test: the pretend CAS answers the charset query itself (`dbCharset`, `cas.charsetAsked()`), outside `cas.log`; unit tests for ISO-8859-1, UTF-8, a refused query, reading once, and a fixed charset; `test_CoraDBConnection.jdbc.js`'s test of the first mode change after the login uses a fixed charset (with a comment), and a new one checks nothing is committed after the charset query. Unit tests for the SQL-text encoding (literals with a charset, quotes, comments, error positions, non-text) and for CLOB text. Live tests: `'auto'` on the ISO-8859-1 dataset, and the default connection reading ISO-8859-1; the existing Korean / Russian `_utf8` and CLOB tests pass on it unchanged.
+
 ## Version 1.0.1 (Nov 19, 2026)
 
 A second review against the CoraDB server source and the JDBC driver: wrong values (column nullability, graph objects, empty BIT VARYING, collection columns in the schema), a server handle number reused under an old statement, and a statement run again after an unreadable reply are fixed, and the `charset` option (JDBC's `charSet`) is new. `MIGRATION.md` is new.
